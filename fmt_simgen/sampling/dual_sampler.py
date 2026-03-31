@@ -74,7 +74,7 @@ class DualSampler:
         grid_y = np.arange(ny) * spacing + offset[1] + spacing / 2
         grid_z = np.arange(nz) * spacing + offset[2] + spacing / 2
 
-        gz, gy, gx = np.meshgrid(grid_z, grid_y, grid_x, indexing="ij")
+        gx, gy, gz = np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
 
         coords = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
 

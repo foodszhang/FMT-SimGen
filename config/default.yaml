@@ -137,7 +137,7 @@ physics:
       n: 1.38
 
 tumor:
-  regions: ["ventral"]
+  regions: ["dorsal", "lateral"]
   num_foci_distribution:
     1: 0.30
     2: 0.35

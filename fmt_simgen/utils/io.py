@@ -79,4 +79,4 @@ def load_json(filepath: str) -> Any:
         Loaded data.
     """
     with open(filepath, "r") as f:
-        return json.load(filepath)
+        return json.load(f)

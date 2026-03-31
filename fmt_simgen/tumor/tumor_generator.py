@@ -170,8 +170,11 @@ class TumorGenerator:
         radius = self._rng.uniform(*self.radius_range)
 
         foci: List[AnalyticFocus] = []
+        attempts = 0
+        max_attempts = 100
 
-        for i in range(num_foci):
+        while len(foci) < num_foci and attempts < max_attempts:
+            attempts += 1
             center, from_atlas = self._sample_position_with_source()
 
             if not from_atlas:
@@ -184,12 +187,11 @@ class TumorGenerator:
 
             params = self._get_shape_params(shape, radius)
 
-            focus = AnalyticFocus(center=center, shape=shape, params=params)
-            foci.append(focus)
+            new_focus = AnalyticFocus(center=center, shape=shape, params=params)
+            test_foci = foci + [new_focus]
 
-            if not self._check_constraints(foci):
-                foci.remove(focus)
-                i -= 1
+            if self._check_constraints(test_foci):
+                foci.append(new_focus)
 
         return TumorSample(foci=foci)
 
@@ -226,10 +228,9 @@ class TumorGenerator:
     def _sample_from_atlas(self) -> np.ndarray:
         """Sample position from atlas subcutaneous region."""
         region = self._rng.choice(self.regions)
-        depth_mm = self._rng.uniform(*self.depth_range)
 
         subq_mask = self.atlas.get_subcutaneous_region(
-            depth_range_mm=(depth_mm, depth_mm),
+            depth_range_mm=tuple(self.depth_range),
             regions=[region],
         )
 
@@ -249,17 +250,37 @@ class TumorGenerator:
     def _sample_from_config(self) -> np.ndarray:
         """Sample position from config-based ranges (fallback).
 
-        Uses fixed bounds that are within typical mesh bounds.
+        Mesh coordinate ranges (0-based physical coords):
+        X: [2.4, 34.4] mm, Y: [4.8, 92.8] mm, Z: [1.6, 20.0] mm
+
+        Dorsal side = high Z values (Z > 12mm)
+        Lateral sides = extreme X values (X < 8 or X > 28)
+        Trunk region = Y in [20, 70] mm (exclude head and tail)
         """
-        depth = self._rng.uniform(*self.depth_range)
-        return np.array(
-            [
-                self._rng.uniform(10.0, 25.0),
+        region = self._rng.choice(self.regions) if self.regions else "dorsal"
+
+        if region == "dorsal":
+            return np.array([
+                self._rng.uniform(10.0, 28.0),
                 self._rng.uniform(20.0, 70.0),
-                self._rng.uniform(3.0, 10.0),
-            ],
-            dtype=np.float64,
-        )
+                self._rng.uniform(15.0, 19.0),
+            ], dtype=np.float64)
+        elif region == "lateral":
+            x_side = self._rng.choice([
+                self._rng.uniform(3.0, 8.0),
+                self._rng.uniform(28.0, 33.0),
+            ])
+            return np.array([
+                x_side,
+                self._rng.uniform(20.0, 70.0),
+                self._rng.uniform(8.0, 14.0),
+            ], dtype=np.float64)
+        else:
+            return np.array([
+                self._rng.uniform(10.0, 28.0),
+                self._rng.uniform(20.0, 70.0),
+                self._rng.uniform(2.0, 5.0),
+            ], dtype=np.float64)
 
     def _get_depth_at_position(self, position: np.ndarray) -> float:
         """Estimate depth from surface at given position.
