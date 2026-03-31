@@ -54,27 +54,40 @@ class AnalyticFocus:
             raise ValueError(f"Unknown shape type: {self.shape}")
 
     def _evaluate_sphere(self, coords: np.ndarray) -> np.ndarray:
-        """Evaluate Gaussian sphere: exp(-r^2 / (2 * sigma^2))."""
-        r = self.params.get("radius", 1.0)
-        sigma = r / 2.0
+        """Evaluate Gaussian sphere with sigma = radius, truncated at 3*sigma.
+
+        d(x) = exp(-||x - center||^2 / (2 * sigma^2)) for ||x - center|| <= 3*sigma
+               0 otherwise
+        """
+        radius = self.params.get("radius", 1.0)
+        sigma = radius
+        cutoff = 3.0 * sigma
 
         distances = np.linalg.norm(coords - self.center, axis=1)
-        return np.exp(-(distances**2) / (2.0 * sigma**2))
+        values = np.exp(-(distances**2) / (2.0 * sigma**2))
+        values = np.where(distances <= cutoff, values, 0.0)
+        return values
 
     def _evaluate_ellipsoid(self, coords: np.ndarray) -> np.ndarray:
-        """Evaluate Gaussian ellipsoid with axis ratios."""
-        radii = np.array(
-            [
-                self.params.get("rx", 1.0),
-                self.params.get("ry", 1.0),
-                self.params.get("rz", 1.0),
-            ]
-        )
-        sigma = radii / 2.0
+        """Evaluate Gaussian ellipsoid with sigma = radii, truncated at 3*sigma.
+
+        d(x) = exp(-sum((x_i - c_i)^2 / (2 * sigma_i^2))) for all ||x - center|| <= 3*sigma_max
+               0 otherwise
+        """
+        radii = np.array([
+            self.params.get("rx", 1.0),
+            self.params.get("ry", 1.0),
+            self.params.get("rz", 1.0),
+        ])
+        sigma = radii
+        cutoff = 3.0 * np.max(sigma)
 
         diff = coords - self.center
         normalized_dist = diff / sigma
-        return np.exp(-0.5 * np.sum(normalized_dist**2, axis=1))
+        distances = np.sqrt(np.sum(normalized_dist**2, axis=1))
+        values = np.exp(-0.5 * np.sum(normalized_dist**2, axis=1))
+        values = np.where(distances <= cutoff, values, 0.0)
+        return values
 
 
 @dataclass
@@ -84,7 +97,10 @@ class TumorSample:
     foci: List[AnalyticFocus] = field(default_factory=list)
 
     def evaluate(self, coords: np.ndarray) -> np.ndarray:
-        """Evaluate total tumor distribution at given coordinates.
+        """Evaluate tumor distribution at given coordinates using max of all foci.
+
+        For multi-focal tumors, takes the maximum intensity across all foci
+        at each point (avoids signal buildup in overlapping regions).
 
         Parameters
         ----------
@@ -94,14 +110,15 @@ class TumorSample:
         Returns
         -------
         np.ndarray
-            Combined tumor values [N] (sum of all foci).
+            Combined tumor values [N] (max of all foci).
         """
         if not self.foci:
             return np.zeros(coords.shape[0])
 
         values = np.zeros(coords.shape[0])
         for focus in self.foci:
-            values += focus.evaluate(coords)
+            focus_values = focus.evaluate(coords)
+            values = np.maximum(values, focus_values)
 
         return values
 
@@ -137,6 +154,8 @@ class TumorGenerator:
             - depth_range: List[float, float] - [min, max]皮下深度 in mm
             - min_inter_foci_distance_ratio: float - ratio * 灶直径
             - ellipsoid_axis_ratio: List[float, float] - [rx_ratio, rz_ratio]
+            - max_cluster_radius: float - max distance from anchor for multi-focus
+            - min_foci_distance_abs: float - min absolute inter-foci distance (mm)
         atlas : DigimouseAtlas, optional
             Atlas for region sampling. If None, use config-based ranges.
         mesh_bbox : Dict, optional
@@ -154,15 +173,20 @@ class TumorGenerator:
         self.shapes = [
             ShapeType(s) for s in config.get("shapes", ["sphere", "ellipsoid"])
         ]
-        self.radius_range = config.get("radius_range", [0.3, 1.0])
-        self.depth_range = config.get("depth_range", [1.0, 3.0])
+        self.radius_range = config.get("radius_range", [1.0, 2.5])
+        self.depth_range = config.get("depth_range", [1.5, 4.0])
         self.min_inter_ratio = config.get("min_inter_foci_distance_ratio", 1.5)
         self.ellipsoid_ratio = config.get("ellipsoid_axis_ratio", [1.2, 1.5])
+        self.max_cluster_radius = config.get("max_cluster_radius", 8.0)
+        self.min_foci_distance_abs = config.get("min_foci_distance_abs", 3.0)
 
         self._rng = np.random.default_rng()
 
     def generate_sample(self) -> TumorSample:
         """Generate a single tumor sample.
+
+        For multi-focal samples, uses cluster-based placement where
+        additional foci are placed near the anchor focus.
 
         Returns
         -------
@@ -174,30 +198,99 @@ class TumorGenerator:
         radius = self._rng.uniform(*self.radius_range)
 
         foci: List[AnalyticFocus] = []
-        attempts = 0
-        max_attempts = 100
+        cluster_radius = self.max_cluster_radius
 
-        while len(foci) < num_foci and attempts < max_attempts:
-            attempts += 1
-            center, from_atlas = self._sample_position_with_source()
+        for focus_idx in range(num_foci):
+            center = None
+            is_anchor = (focus_idx == 0)
+            attempts = 0
+            max_attempts = 100
 
-            if not from_atlas:
-                depth = self._get_depth_at_position(center)
-                while depth < self.depth_range[0] or depth > self.depth_range[1]:
-                    center, from_atlas = self._sample_position_with_source()
-                    if from_atlas:
-                        break
-                    depth = self._get_depth_at_position(center)
+            while center is None and attempts < max_attempts:
+                attempts += 1
 
-            params = self._get_shape_params(shape, radius)
+                if is_anchor:
+                    candidate_center, from_atlas = self._sample_position_with_source()
+                else:
+                    candidate_center = self._sample_cluster_position(foci[0] if foci else None, cluster_radius)
 
-            new_focus = AnalyticFocus(center=center, shape=shape, params=params)
-            test_foci = foci + [new_focus]
+                if candidate_center is None:
+                    continue
 
-            if self._check_constraints(test_foci):
-                foci.append(new_focus)
+                if not from_atlas if is_anchor else True:
+                    depth = self._get_depth_at_position(candidate_center)
+                    if depth < self.depth_range[0] or depth > self.depth_range[1]:
+                        if is_anchor:
+                            candidate_center, from_atlas = self._sample_position_with_source()
+                        else:
+                            candidate_center = None
+                        continue
+
+                params = self._get_shape_params(shape, radius)
+                new_focus = AnalyticFocus(center=candidate_center, shape=shape, params=params)
+                test_foci = foci + [new_focus]
+
+                if self._check_constraints(test_foci):
+                    foci.append(new_focus)
+                    center = candidate_center
+                else:
+                    if not is_anchor and cluster_radius < 12.0:
+                        cluster_radius = 12.0
+
+            if center is None and focus_idx > 0:
+                cluster_radius = 12.0
+                candidate_center = self._sample_cluster_position(foci[0] if foci else None, cluster_radius)
+                if candidate_center is not None:
+                    depth = self._get_depth_at_position(candidate_center)
+                    if self.depth_range[0] <= depth <= self.depth_range[1]:
+                        params = self._get_shape_params(shape, radius)
+                        new_focus = AnalyticFocus(center=candidate_center, shape=shape, params=params)
+                        foci.append(new_focus)
 
         return TumorSample(foci=foci)
+
+    def _sample_cluster_position(self, anchor: Optional[AnalyticFocus], cluster_radius: float) -> Optional[np.ndarray]:
+        """Sample a position near the anchor for cluster placement.
+
+        Parameters
+        ----------
+        anchor : AnalyticFocus or None
+            Anchor focus to cluster around.
+        cluster_radius : float
+            Maximum distance from anchor.
+
+        Returns
+        -------
+        np.ndarray or None
+            Sampled position or None if sampling fails.
+        """
+        if anchor is None:
+            return self._sample_position_with_source()[0]
+
+        anchor_center = anchor.center
+
+        for _ in range(50):
+            r = self._rng.uniform(0, cluster_radius)
+            theta = self._rng.uniform(0, 2 * np.pi)
+            phi = self._rng.uniform(0, np.pi)
+
+            offset = r * np.array([
+                np.sin(phi) * np.cos(theta),
+                np.sin(phi) * np.sin(theta),
+                np.cos(phi)
+            ])
+
+            candidate = anchor_center + offset
+
+            if self.mesh_bbox is not None:
+                bbox_min = np.array(self.mesh_bbox["min"])
+                bbox_max = np.array(self.mesh_bbox["max"])
+                if np.any(candidate < bbox_min) or np.any(candidate > bbox_max):
+                    continue
+
+            return candidate
+
+        return None
 
     def _sample_num_foci(self) -> int:
         """Sample number of foci from distribution."""
@@ -370,7 +463,8 @@ class TumorGenerator:
 
                 r_i = foci_list[i].params.get("radius", 1.0)
                 r_j = foci_list[j].params.get("radius", 1.0)
-                min_dist = self.min_inter_ratio * (r_i + r_j)
+                min_dist_by_diameter = self.min_inter_ratio * (r_i + r_j)
+                min_dist = max(min_dist_by_diameter, self.min_foci_distance_abs)
 
                 if dist < min_dist:
                     return False

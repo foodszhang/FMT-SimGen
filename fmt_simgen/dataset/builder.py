@@ -240,6 +240,8 @@ class DatasetBuilder:
 
             self._save_sample(sample, output_path, i)
 
+            self._validate_sample(sample, self._mesh_data.nodes)
+
         print(f"Dataset saved to {output_path}")
 
         return samples
@@ -304,3 +306,36 @@ class DatasetBuilder:
 
         with open(sample_dir / "tumor_params.json", "w") as f:
             json.dump(sample.tumor_params, f, indent=2)
+
+    def _validate_sample(self, sample: SampleOutput, nodes: np.ndarray) -> None:
+        """Validate sample and print diagnostic info.
+
+        Parameters
+        ----------
+        sample : SampleOutput
+            Generated sample to validate.
+        nodes : np.ndarray
+            FEM mesh nodes [N x 3].
+        """
+        warnings = []
+
+        for focus in sample.tumor_params["foci"]:
+            center = np.array(focus["center"])
+            radius = focus["params"].get("radius", 0.5)
+            sigma = radius
+            cutoff = 3.0 * sigma
+
+            dists = np.linalg.norm(nodes - center, axis=1)
+            nodes_inside = np.sum(dists <= cutoff)
+
+            if nodes_inside < 3:
+                warnings.append(f"  WARNING: Focus at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) has only {nodes_inside} nodes in 3sigma={cutoff:.1f}mm range")
+
+        gt_nonzero = np.count_nonzero(sample.gt_nodes)
+        meas_nonzero = np.count_nonzero(sample.measurement_b)
+
+        if warnings:
+            for w in warnings:
+                print(w)
+        print(f"    gt_nodes: nonzero={gt_nonzero}, max={sample.gt_nodes.max():.4f}")
+        print(f"    measurement_b: nonzero={meas_nonzero}, max={sample.measurement_b.max():.4f}")
