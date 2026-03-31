@@ -1,0 +1,156 @@
+atlas:
+  path: "/home/foods/pro/mcx_simulation/ct_data/atlas_380x992x208.hdr"
+  voxel_size: 0.1
+
+  # Digimouse has 22 tissue labels (0-21)
+  # Mapping to our simplified tissue classes for FMT simulation
+  # Key insight from label stats:
+  #   - Labels 3-8, 10 = brain regions (small volumes, in head)
+  #   - Label 11 = muscle (107K voxels, ventral)
+  #   - Label 12 = fat (30K voxels)
+  #   - Label 13 = cartilage (190K voxels)
+  #   - Label 14 = tongue (149K voxels)
+  #   - Labels 15-21 = major organs (various volumes)
+  #   - Label 1 = skin (16.7M voxels, covers entire body)
+  #   - Label 2 = skeleton/bone (1.2M voxels)
+  tissue_merge:
+    # Background
+    0: 0
+    # Skin -> skin (label 1)
+    1: 1
+    # Skeleton -> bone (label 2)
+    2: 2
+    # Brain regions -> brain (label 3)
+    3: 3
+    4: 3  # medulla
+    5: 3  # cerebellum
+    6: 3  # olfactory_bulb
+    7: 3  # external_brain
+    8: 3  # striatum
+    10: 3 # brain_other
+    # Muscle (label 11) - main subcutaneous tissue for tumor placement
+    11: 4
+    # Fat (label 12) - also subcutaneous
+    12: 4
+    # Cartilage (label 13) - soft tissue
+    13: 4
+    # Tongue (label 14) - in head region
+    14: 4
+    # Major organs - each keeps its label for now
+    9: 5   # heart
+    15: 6  # stomach
+    16: 7  # spleen
+    17: 8  # pancreas
+    18: 9  # liver
+    19: 10 # kidney
+    20: 10 # adrenal (close to kidney)
+    21: 11 # lung
+
+mesh:
+  tool: "iso2mesh"
+  target_nodes: 10000
+  surface_maxvol: 0.5
+  deep_maxvol: 5.0
+  roi_maxvol: 1.0
+  output_path: "assets/mesh/"
+
+physics:
+  model: "DE"
+  n: 1.37
+
+  # Optical parameters in mm^-1
+  # Format: {simplified_label: {mua, mus (not mus'), g, n}}
+  # Note: MS-GDUN uses mus (reduced scattering), P1 uses mus (total scattering)
+  # Using MS-GDUN values (they computed mus' directly)
+  tissues:
+    background:
+      label: 0
+      mu_a: 0.0
+      mu_s_prime: 0.0
+      g: 1.0
+      n: 1.0
+    skin:
+      label: 1
+      mu_a: 0.0338
+      mu_s_prime: 11.9827
+      g: 0.9
+      n: 1.37
+    bone:
+      label: 2
+      mu_a: 0.05251
+      mu_s_prime: 24.4153
+      g: 0.9
+      n: 1.37
+    brain:
+      label: 3
+      mu_a: 0.03180
+      mu_s_prime: 15.9590
+      g: 0.9
+      n: 1.37
+    muscle:
+      label: 4
+      mu_a: 0.08697
+      mu_s_prime: 4.29071
+      g: 0.90
+      n: 1.37
+    heart:
+      label: 5
+      mu_a: 0.065
+      mu_s_prime: 22.4
+      g: 0.9
+      n: 1.38
+    stomach:
+      label: 6
+      mu_a: 0.028
+      mu_s_prime: 18.7
+      g: 0.88
+      n: 1.37
+    spleen:
+      label: 7
+      mu_a: 0.052
+      mu_s_prime: 25.3
+      g: 0.89
+      n: 1.38
+    pancreas:
+      label: 8
+      mu_a: 0.035
+      mu_s_prime: 16.2
+      g: 0.87
+      n: 1.37
+    liver:
+      label: 9
+      mu_a: 0.041
+      mu_s_prime: 20.5
+      g: 0.88
+      n: 1.37
+    kidney:
+      label: 10
+      mu_a: 0.038
+      mu_s_prime: 19.2
+      g: 0.89
+      n: 1.37
+    lung:
+      label: 11
+      mu_a: 0.022
+      mu_s_prime: 35.7
+      g: 0.86
+      n: 1.38
+
+tumor:
+  regions: ["ventral"]
+  num_foci_distribution:
+    1: 0.30
+    2: 0.35
+    3: 0.35
+  shapes: ["sphere", "ellipsoid"]
+  radius_range: [0.3, 1.0]
+  depth_range: [1.0, 3.0]
+  min_inter_foci_distance_ratio: 1.5
+  ellipsoid_axis_ratio: [1.2, 1.5]
+
+dataset:
+  num_samples: 50
+  noise: null
+  voxel_spacing: 0.2
+  voxel_grid_roi_size_mm: 30.0
+  output_path: "data/"
