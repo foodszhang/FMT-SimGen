@@ -123,7 +123,7 @@ class TumorSample:
 class TumorGenerator:
     """Generate tumor samples as collections of analytic foci."""
 
-    def __init__(self, config: Dict, atlas=None):
+    def __init__(self, config: Dict, atlas=None, mesh_bbox=None):
         """Initialize tumor generator.
 
         Parameters
@@ -139,9 +139,13 @@ class TumorGenerator:
             - ellipsoid_axis_ratio: List[float, float] - [rx_ratio, rz_ratio]
         atlas : DigimouseAtlas, optional
             Atlas for region sampling. If None, use config-based ranges.
+        mesh_bbox : Dict, optional
+            Mesh bounding box for depth estimation.
+            {"min": [x_min, y_min, z_min], "max": [x_max, y_max, z_max]}
         """
         self.config = config
         self.atlas = atlas
+        self.mesh_bbox = mesh_bbox
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -218,15 +222,23 @@ class TumorGenerator:
         Returns
         -------
         Tuple[np.ndarray, bool]
-            (position [3] in mm, from_atlas bool)
+            (position [3] in mm, actually_from_atlas bool)
         """
         if self.atlas is not None:
-            return self._sample_from_atlas(), True
+            pos, used_atlas = self._sample_from_atlas_with_flag()
+            return pos, used_atlas
         else:
             return self._sample_from_config(), False
 
-    def _sample_from_atlas(self) -> np.ndarray:
-        """Sample position from atlas subcutaneous region."""
+    def _sample_from_atlas_with_flag(self) -> Tuple[np.ndarray, bool]:
+        """Attempt to sample from atlas subcutaneous region.
+
+        Returns
+        -------
+        Tuple[np.ndarray, bool]
+            (position [3] in mm, actually_from_atlas bool)
+            Returns (config_position, False) if atlas sampling fails.
+        """
         region = self._rng.choice(self.regions)
 
         subq_mask = self.atlas.get_subcutaneous_region(
@@ -235,7 +247,7 @@ class TumorGenerator:
         )
 
         if not np.any(subq_mask):
-            return self._sample_from_config()
+            return self._sample_from_config(), False
 
         voxel_coords = np.argwhere(subq_mask)
         idx = self._rng.integers(len(voxel_coords))
@@ -245,7 +257,7 @@ class TumorGenerator:
 
         return np.array(
             [x * voxel_size, y * voxel_size, z * voxel_size], dtype=np.float64
-        )
+        ), True
 
     def _sample_from_config(self) -> np.ndarray:
         """Sample position from config-based ranges (fallback).
@@ -283,7 +295,10 @@ class TumorGenerator:
             ], dtype=np.float64)
 
     def _get_depth_at_position(self, position: np.ndarray) -> float:
-        """Estimate depth from surface at given position.
+        """Estimate depth from nearest body surface.
+
+        Uses mesh bounding box as surface approximation.
+        Depth = min distance to any bbox face.
 
         Parameters
         ----------
@@ -295,10 +310,16 @@ class TumorGenerator:
         float
             Estimated depth in mm (positive value).
         """
-        if self.atlas is None:
-            return abs(position[2])
+        if self.mesh_bbox is not None:
+            bbox_min = np.array(self.mesh_bbox["min"])
+            bbox_max = np.array(self.mesh_bbox["max"])
+            distances = np.concatenate([
+                position - bbox_min,
+                bbox_max - position,
+            ])
+            return float(np.min(np.abs(distances)))
 
-        return abs(position[2])
+        return 2.0
 
     def _get_shape_params(self, shape: ShapeType, base_radius: float) -> Dict:
         """Get shape parameters.

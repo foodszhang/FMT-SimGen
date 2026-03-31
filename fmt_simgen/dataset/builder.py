@@ -203,8 +203,14 @@ class DatasetBuilder:
             offset=node_min,
         )
 
+        mesh_min = self._mesh_data.nodes.min(axis=0)
+        mesh_max = self._mesh_data.nodes.max(axis=0)
+        mesh_bbox = {"min": mesh_min.tolist(), "max": mesh_max.tolist()}
+
         self.tumor_generator = TumorGenerator(
-            config=self.tumor_config, atlas=self.atlas
+            config=self.tumor_config,
+            atlas=self.atlas,
+            mesh_bbox=mesh_bbox,
         )
 
         dual_sampler = DualSampler(
