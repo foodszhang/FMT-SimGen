@@ -79,3 +79,4 @@ output/
 !config/*.npz
 data/
 assets/
+train/checkpoints/

@@ -1,0 +1,25 @@
+[project]
+name = "fmt-simgen"
+version = "0.1.0"
+description = "FMT Simulation Dataset Generator"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.21.0",
+  "scipy>=1.7.0",
+  "nibabel>=4.0.0",
+  "pyyaml>=6.0",
+  "iso2mesh>=0.1.0",
+  "meshio>=5.0.0",
+  "scikit-learn>=1.8.0",
+  "torch>=2.9.0",
+  "torchvision>=0.20.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+torchvision = { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
