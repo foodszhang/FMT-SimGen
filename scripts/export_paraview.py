@@ -38,7 +38,11 @@ def export_mesh_tissue():
 
     import meshio
 
-    mesh_data = np.load("output/shared/mesh.npz", allow_pickle=True)
+    mesh_paths = ["assets/mesh/mesh.npz", "output/shared/mesh.npz"]
+    for path in mesh_paths:
+        if Path(path).exists():
+            mesh_data = np.load(path, allow_pickle=True)
+            break
     nodes = mesh_data["nodes"]
     elements = mesh_data["elements"]
     tissue_labels = mesh_data["tissue_labels"]
@@ -59,7 +63,11 @@ def export_samples():
     import meshio
     import nibabel as nib
 
-    mesh_data = np.load("output/shared/mesh.npz", allow_pickle=True)
+    mesh_paths = ["assets/mesh/mesh.npz", "output/shared/mesh.npz"]
+    for path in mesh_paths:
+        if Path(path).exists():
+            mesh_data = np.load(path, allow_pickle=True)
+            break
     nodes = mesh_data["nodes"]
     elements = mesh_data["elements"]
     surface_faces = mesh_data["surface_faces"]

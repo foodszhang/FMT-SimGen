@@ -87,6 +87,9 @@ class DatasetBuilder:
             and matrix_file.with_suffix(".M.npz").exists()
         ):
             print(f"Shared assets already exist at {mesh_path}, skipping.")
+            self._load_mesh_data(str(mesh_file))
+            self._setup_optical_manager()
+            self._load_fem_solver(str(matrix_file))
             return {"mesh": mesh_file, "matrix": matrix_file}
 
         if not force_regenerate and default_output.exists():
@@ -113,13 +116,13 @@ class DatasetBuilder:
             atlas_volume=self.atlas.volume, voxel_size=self.atlas.voxel_size
         )
 
-        mesh_file = self.mesh_generator.save(self._mesh_data, str(mesh_path / "mesh"))
+        mesh_file = self.mesh_generator.save(self._mesh_data, "mesh")
 
         print("  Assembling FEM system matrix...")
         self._setup_fem_solver()
-        self._fem_solver.assemble_system_matrix()
+        self.fem_solver.assemble_system_matrix()
 
-        matrix_file = self._fem_solver.save_system_matrix(
+        matrix_file = self.fem_solver.save_system_matrix(
             str(mesh_path / "system_matrix")
         )
 
@@ -157,14 +160,14 @@ class DatasetBuilder:
             Path prefix for matrix files (without .K.npz etc).
         """
         matrix_prefix = Path(matrix_prefix)
-        self._fem_solver = FEMSolver(
+        self.fem_solver = FEMSolver(
             nodes=self._mesh_data.nodes,
             elements=self._mesh_data.elements,
             surface_faces=self._mesh_data.surface_faces,
             tissue_labels=self._mesh_data.tissue_labels,
             opt_params_manager=self.opt_manager,
         )
-        self._fem_solver.load_system_matrix(str(matrix_prefix))
+        self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
     def build_samples(self, num_samples: Optional[int] = None) -> List[SampleOutput]:
@@ -228,7 +231,7 @@ class DatasetBuilder:
 
             gt_voxels = dual_sampler.sample_to_voxels(tumor_sample)
 
-            measurement_b = self._fem_solver.forward(gt_nodes)
+            measurement_b = self.fem_solver.forward(gt_nodes)
 
             sample = SampleOutput(
                 measurement_b=measurement_b,
@@ -273,7 +276,7 @@ class DatasetBuilder:
         if self._mesh_data is None:
             raise RuntimeError("Mesh data not loaded. Call build_shared_assets first.")
 
-        self._fem_solver = FEMSolver(
+        self.fem_solver = FEMSolver(
             nodes=self._mesh_data.nodes,
             elements=self._mesh_data.elements,
             surface_faces=self._mesh_data.surface_faces,
@@ -292,7 +295,7 @@ class DatasetBuilder:
         if self.opt_manager is None:
             self._setup_optical_manager()
 
-        if self._fem_solver is None:
+        if self.fem_solver is None:
             self._setup_fem_solver()
 
     def _save_sample(self, sample: SampleOutput, output_path: Path, index: int) -> None:
@@ -329,7 +332,9 @@ class DatasetBuilder:
             nodes_inside = np.sum(dists <= cutoff)
 
             if nodes_inside < 3:
-                warnings.append(f"  WARNING: Focus at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) has only {nodes_inside} nodes in 3sigma={cutoff:.1f}mm range")
+                warnings.append(
+                    f"  WARNING: Focus at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) has only {nodes_inside} nodes in 3sigma={cutoff:.1f}mm range"
+                )
 
         gt_nonzero = np.count_nonzero(sample.gt_nodes)
         meas_nonzero = np.count_nonzero(sample.measurement_b)
@@ -338,4 +343,6 @@ class DatasetBuilder:
             for w in warnings:
                 print(w)
         print(f"    gt_nodes: nonzero={gt_nonzero}, max={sample.gt_nodes.max():.4f}")
-        print(f"    measurement_b: nonzero={meas_nonzero}, max={sample.measurement_b.max():.4f}")
+        print(
+            f"    measurement_b: nonzero={meas_nonzero}, max={sample.measurement_b.max():.4f}"
+        )

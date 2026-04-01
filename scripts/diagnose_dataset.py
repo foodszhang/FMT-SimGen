@@ -21,11 +21,16 @@ import json
 
 def load_mesh():
     """Load mesh data."""
-    mesh_data = np.load("output/shared/mesh.npz", allow_pickle=True)
-    return {
-        "nodes": mesh_data["nodes"],
-        "elements": mesh_data["elements"],
-    }
+    mesh_paths = ["assets/mesh/mesh.npz", "output/shared/mesh.npz"]
+    for path in mesh_paths:
+        if Path(path).exists():
+            mesh_data = np.load(path, allow_pickle=True)
+            print(f"  Mesh loaded from: {path}")
+            return {
+                "nodes": mesh_data["nodes"],
+                "elements": mesh_data["elements"],
+            }
+    raise FileNotFoundError("No mesh file found")
 
 
 def diagnose_focus_distances():
@@ -74,18 +79,30 @@ def diagnose_focus_distances():
     return all_distances
 
 
+def get_base_radius(focus):
+    """Get base radius from focus params (handles sphere and ellipsoid)."""
+    if "radius" in focus["params"]:
+        return focus["params"]["radius"]
+    elif "ry" in focus["params"]:
+        return focus["params"]["ry"]
+    else:
+        return 0.5
+
+
 def diagnose_node_sampling(mesh_nodes):
-    """Diagnose node-level GT sampling."""
+    """Diagnose node-level GT sampling with 3σ and 4σ cutoffs."""
     print()
     print("=" * 70)
-    print("2. NODE-LEVEL GT SAMPLING DIAGNOSTIC")
+    print("2. NODE-LEVEL GT SAMPLING DIAGNOSTIC (Gaussian, sigma=radius)")
     print("=" * 70)
 
     sample_dirs = sorted(Path("data").glob("sample_*"))
-    all_nodes_per_focus = []
 
-    zero_node_foci_count = 0
     total_foci = 0
+    zero_node_3sigma_count = 0
+    zero_node_4sigma_count = 0
+    nodes_per_focus_3sigma = []
+    nodes_per_focus_4sigma = []
 
     for sd in sample_dirs:
         with open(sd / "tumor_params.json") as f:
@@ -94,31 +111,45 @@ def diagnose_node_sampling(mesh_nodes):
         for focus in tp["foci"]:
             total_foci += 1
             center = np.array(focus["center"])
-            radius = focus["params"].get("radius", 0.5)
+            base_radius = get_base_radius(focus)
+            sigma = base_radius
+            cutoff_3sigma = 3.0 * sigma
+            cutoff_4sigma = 4.0 * sigma
 
             dists = np.linalg.norm(mesh_nodes - center, axis=1)
-            nodes_inside = np.sum(dists <= radius)
-            all_nodes_per_focus.append(nodes_inside)
+            nodes_3sigma = np.sum(dists <= cutoff_3sigma)
+            nodes_4sigma = np.sum(dists <= cutoff_4sigma)
 
-            if nodes_inside == 0:
-                zero_node_foci_count += 1
+            nodes_per_focus_3sigma.append(nodes_3sigma)
+            nodes_per_focus_4sigma.append(nodes_4sigma)
 
-    all_nodes_per_focus = np.array(all_nodes_per_focus)
+            if nodes_3sigma == 0:
+                zero_node_3sigma_count += 1
+            if nodes_4sigma == 0:
+                zero_node_4sigma_count += 1
+
+    nodes_per_focus_3sigma = np.array(nodes_per_focus_3sigma)
+    nodes_per_focus_4sigma = np.array(nodes_per_focus_4sigma)
 
     print(f"Total foci analyzed: {total_foci}")
-    print(f"Foci with 0 nodes inside: {zero_node_foci_count} ({zero_node_foci_count/total_foci*100:.1f}%)")
     print()
-    print(f"Nodes per focus:")
-    print(f"  min:  {all_nodes_per_focus.min()}")
-    print(f"  max:  {all_nodes_per_focus.max()}")
-    print(f"  mean: {all_nodes_per_focus.mean():.2f}")
-    print(f"  median: {np.median(all_nodes_per_focus):.1f}")
-    print(f"  P10:  {np.percentile(all_nodes_per_focus, 10):.1f}")
-    print(f"  P25:  {np.percentile(all_nodes_per_focus, 25):.1f}")
-    print(f"  P75:  {np.percentile(all_nodes_per_focus, 75):.1f}")
-    print(f"  P90:  {np.percentile(all_nodes_per_focus, 90):.1f}")
+    print(f"At 3σ cutoff (Gaussian truncated at 3σ):")
+    print(
+        f"  Foci with 0 nodes: {zero_node_3sigma_count} ({zero_node_3sigma_count / total_foci * 100:.1f}%)"
+    )
+    print(
+        f"  Nodes per focus: min={nodes_per_focus_3sigma.min()}, max={nodes_per_focus_3sigma.max()}, mean={nodes_per_focus_3sigma.mean():.1f}"
+    )
+    print()
+    print(f"At 4σ cutoff (Gaussian truncated at 4σ):")
+    print(
+        f"  Foci with 0 nodes: {zero_node_4sigma_count} ({zero_node_4sigma_count / total_foci * 100:.1f}%)"
+    )
+    print(
+        f"  Nodes per focus: min={nodes_per_focus_4sigma.min()}, max={nodes_per_focus_4sigma.max()}, mean={nodes_per_focus_4sigma.mean():.1f}"
+    )
 
-    return all_nodes_per_focus
+    return nodes_per_focus_4sigma
 
 
 def diagnose_surface_signals():
@@ -137,16 +168,18 @@ def diagnose_surface_signals():
             tp = json.load(f)
 
         nonzero_count = np.count_nonzero(meas_b)
-        signals.append({
-            "sample": sd.name,
-            "nonzero": nonzero_count,
-            "max": meas_b.max(),
-            "sum": meas_b.sum(),
-            "nonzero_ratio": nonzero_count / len(meas_b),
-            "num_foci": tp["num_foci"],
-            "centers": [focus["center"] for focus in tp["foci"]],
-            "radii": [focus["params"].get("radius", 0.5) for focus in tp["foci"]],
-        })
+        signals.append(
+            {
+                "sample": sd.name,
+                "nonzero": nonzero_count,
+                "max": meas_b.max(),
+                "sum": meas_b.sum(),
+                "nonzero_ratio": nonzero_count / len(meas_b),
+                "num_foci": tp["num_foci"],
+                "centers": [focus["center"] for focus in tp["foci"]],
+                "radii": [get_base_radius(focus) for focus in tp["foci"]],
+            }
+        )
 
     signals_sorted = sorted(signals, key=lambda x: x["sum"])
 
@@ -154,10 +187,14 @@ def diagnose_surface_signals():
     print(f"{'Sample':<15} {'Nonzero':>10} {'Max':>8} {'Sum':>12} {'Nonzero%':>10}")
     print("-" * 60)
     for s in signals_sorted[:5]:
-        print(f"{s['sample']:<15} {s['nonzero']:>10} {s['max']:>8.4f} {s['sum']:>12.6f} {s['nonzero_ratio']*100:>9.1f}%")
+        print(
+            f"{s['sample']:<15} {s['nonzero']:>10} {s['max']:>8.4f} {s['sum']:>12.6f} {s['nonzero_ratio'] * 100:>9.1f}%"
+        )
     print("  ...")
     for s in signals_sorted[-5:]:
-        print(f"{s['sample']:<15} {s['nonzero']:>10} {s['max']:>8.4f} {s['sum']:>12.6f} {s['nonzero_ratio']*100:>9.1f}%")
+        print(
+            f"{s['sample']:<15} {s['nonzero']:>10} {s['max']:>8.4f} {s['sum']:>12.6f} {s['nonzero_ratio'] * 100:>9.1f}%"
+        )
 
     print()
     print("=" * 70)
@@ -167,7 +204,9 @@ def diagnose_surface_signals():
         print(f"\n{s['sample']}:")
         print(f"  sum={s['sum']:.6f}, max={s['max']:.4f}, nonzero={s['nonzero']}")
         for i, (c, r) in enumerate(zip(s["centers"], s["radii"])):
-            print(f"  Focus {i}: center=({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}), radius={r:.2f}")
+            print(
+                f"  Focus {i}: center=({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}), radius={r:.2f}"
+            )
 
     print()
     print("=" * 70)
@@ -177,7 +216,9 @@ def diagnose_surface_signals():
         print(f"\n{s['sample']}:")
         print(f"  sum={s['sum']:.6f}, max={s['max']:.4f}, nonzero={s['nonzero']}")
         for i, (c, r) in enumerate(zip(s["centers"], s["radii"])):
-            print(f"  Focus {i}: center=({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}), radius={r:.2f}")
+            print(
+                f"  Focus {i}: center=({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}), radius={r:.2f}"
+            )
 
 
 def diagnose_mesh_spacing(mesh_nodes, mesh_elements):
@@ -188,10 +229,7 @@ def diagnose_mesh_spacing(mesh_nodes, mesh_elements):
     print("=" * 70)
 
     elem = mesh_elements[:, :4]
-    edge_indices = [
-        (0, 1), (0, 2), (0, 3),
-        (1, 2), (1, 3), (2, 3)
-    ]
+    edge_indices = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
 
     edge_lengths = []
     for e in elem:
@@ -220,10 +258,13 @@ def diagnose_mesh_spacing(mesh_nodes, mesh_elements):
     tumor_region_mask = trunk_mask & (dorsal_mask | lateral_mask)
     tumor_nodes = mesh_nodes[tumor_region_mask]
 
-    print(f"\n  Nodes in tumor region: {len(tumor_nodes)} ({len(tumor_nodes)/len(mesh_nodes)*100:.1f}%)")
+    print(
+        f"\n  Nodes in tumor region: {len(tumor_nodes)} ({len(tumor_nodes) / len(mesh_nodes) * 100:.1f}%)"
+    )
 
     if len(tumor_nodes) > 1:
         from scipy.spatial import KDTree
+
         tree = KDTree(tumor_nodes)
         distances, _ = tree.query(tumor_nodes, k=2)
         nn_distances = distances[:, 1]
