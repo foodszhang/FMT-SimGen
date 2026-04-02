@@ -184,18 +184,25 @@ class TumorGenerator:
 
         self._rng = np.random.default_rng()
 
-    def generate_sample(self) -> TumorSample:
+    def generate_sample(self, num_foci: Optional[int] = None) -> TumorSample:
         """Generate a single tumor sample.
 
         For multi-focal samples, uses cluster-based placement where
         additional foci are placed near the anchor focus.
+
+        Parameters
+        ----------
+        num_foci : int, optional
+            If provided, forces the exact number of foci instead of
+            randomly sampling from the distribution.
 
         Returns
         -------
         TumorSample
             Generated tumor sample with random foci.
         """
-        num_foci = self._sample_num_foci()
+        if num_foci is None:
+            num_foci = self._sample_num_foci()
         shape = self._rng.choice(self.shapes)
         radius = self._rng.uniform(*self.radius_range)
 

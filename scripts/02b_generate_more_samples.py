@@ -12,9 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import yaml
+import json
+
 import numpy as np
 import scipy.sparse as sp
+import yaml
 from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.physics.optical_params import OpticalParameterManager
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
@@ -89,7 +91,7 @@ def main():
         np.save(sample_dir / "gt_nodes.npy", gt_nodes.astype(np.float32))
         np.save(sample_dir / "gt_voxels.npy", gt_voxels.astype(np.float32))
         with open(sample_dir / "tumor_params.json", "w") as f:
-            yaml.dump(tumor.to_dict(), f)
+            json.dump(tumor.to_dict(), f, indent=2, default=str)
 
         if (i - start_idx + 1) % 20 == 0:
             print(f"  Generated {i - start_idx + 1}/{n_generate} samples...")
