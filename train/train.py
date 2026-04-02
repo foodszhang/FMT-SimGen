@@ -4,9 +4,12 @@ MS-GDUN training script for FMT-SimGen.
 
 Usage:
     python train/train.py
+    python train/train.py --resume train/checkpoints/latest.pth
 """
 
 import sys
+import os
+import argparse
 from pathlib import Path
 
 # project root is two levels up from train/train.py
@@ -31,6 +34,15 @@ import train.metrics # noqa: F401
 
 
 def train():
+    parser = argparse.ArgumentParser(description="MS-GDUN training for FMT-SimGen")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume from (e.g. train/checkpoints/latest.pth)",
+    )
+    args = parser.parse_args()
+
     # Load config
     config_path = Path(__file__).parent / "config" / "train_config.yaml"
     with open(config_path) as f:
@@ -120,9 +132,33 @@ def train():
         factor=0.5,
     )
 
+    # Resume from checkpoint
+    start_epoch = 1
     best_val_loss = float("inf")
+    best_dice = 0.0
+    if args.resume and os.path.exists(args.resume):
+        print(f"Resuming from {args.resume}")
+        ckpt = torch.load(args.resume, map_location="cuda")
+        # Backward compatibility: old checkpoints are plain state_dict (OrderedDict)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+            if "optimizer_state_dict" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            if ckpt.get("scheduler_state_dict") and scheduler:
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            start_epoch = ckpt.get("epoch", 0) + 1
+            best_val_loss = ckpt.get("best_val_loss", float("inf"))
+            best_dice = ckpt.get("best_dice", 0.0)
+        else:
+            # Plain state_dict (old format)
+            model.load_state_dict(ckpt)
+            start_epoch = 1
+            print("  (old checkpoint format: starting from epoch 1)")
+        print(f"Resumed at epoch {start_epoch}, best_val_loss={best_val_loss:.4f}, best_dice={best_dice:.4f}")
+    else:
+        print("Starting training from scratch")
 
-    for epoch in range(train_cfg["max_epochs"]):
+    for epoch in range(start_epoch, train_cfg["max_epochs"] + 1):
         # Training
         model.train()
         train_losses = []
@@ -132,13 +168,9 @@ def train():
 
             X0 = torch.zeros(b.size(0), n_nodes, 1, device="cuda")
             pred = model(X0, b)  # [B, N, 1]
+            pred = torch.clamp(pred, min=0.0, max=1.0)
 
-            loss = criterion(
-                pred, gt, nodes,
-                weight_dice=loss_cfg["weight_dice"],
-                weight_le=loss_cfg["weight_le"],
-                weight_mse=loss_cfg["weight_mse"],
-            )
+            loss = criterion(pred, gt, nodes)
 
             optimizer.zero_grad()
             loss.backward()
@@ -158,37 +190,69 @@ def train():
                 gt = batch["gt"].cuda()
                 X0 = torch.zeros(b.size(0), n_nodes, 1, device="cuda")
                 pred = model(X0, b)
-                loss = criterion(
-                    pred, gt, nodes,
-                    weight_dice=loss_cfg["weight_dice"],
-                    weight_le=loss_cfg["weight_le"],
-                    weight_mse=loss_cfg["weight_mse"],
-                )
+                pred = torch.clamp(pred, min=0.0, max=1.0)
+                loss = criterion(pred, gt, nodes)
                 val_losses.append(loss.item())
                 val_metrics.append(evaluate_batch(pred, gt, nodes))
 
         val_loss_mean = sum(val_losses) / len(val_losses)
         val_summary = summarize_metrics(val_metrics)
+        current_dice = val_summary.get("dice_bin_0.3", 0.0)
 
         scheduler.step(val_loss_mean)
 
-        print(
-            f"Epoch {epoch+1:03d}/{train_cfg['max_epochs']} | "
-            f"Train: {train_loss_mean:.4f} | "
-            f"Val: {val_loss_mean:.4f} | "
-            f"Dice: {val_summary['dice']:.4f} | "
-            f"LE: {val_summary['location_error']:.4f} | "
-            f"MSE: {val_summary['mse']:.6f}"
-        )
+        # Every 10 epochs or last epoch: full metrics
+        if epoch % 10 == 0 or epoch == train_cfg["max_epochs"]:
+            print(
+                f"Epoch {epoch:03d}/{train_cfg['max_epochs']} | "
+                f"Train: {train_loss_mean:.4f} | "
+                f"Val: {val_loss_mean:.4f} | "
+                f"Dice: {val_summary['dice']:.4f} | "
+                f"Dice_bin@0.3: {current_dice:.4f} | "
+                f"Recall@0.3: {val_summary.get('recall_0.3', 0.0):.4f} | "
+                f"Prec@0.3: {val_summary.get('precision_0.3', 0.0):.4f} | "
+                f"Dice_bin@0.1: {val_summary.get('dice_bin_0.1', 0.0):.4f} | "
+                f"Recall@0.1: {val_summary.get('recall_0.1', 0.0):.4f} | "
+                f"Prec@0.1: {val_summary.get('precision_0.1', 0.0):.4f} | "
+                f"frac>0.1: {val_summary.get('pred_frac_0.1', 0.0):.4f}"
+            )
+        else:
+            print(
+                f"Epoch {epoch:03d}/{train_cfg['max_epochs']} | "
+                f"Train: {train_loss_mean:.4f} | "
+                f"Val: {val_loss_mean:.4f} | "
+                f"Dice: {val_summary['dice']:.4f} | "
+                f"Dice_bin@0.3: {current_dice:.4f} | "
+                f"Recall@0.1: {val_summary.get('recall_0.1', 0.0):.4f}"
+            )
 
-        # Save best
-        if val_loss_mean < best_val_loss:
+        # Save latest checkpoint every epoch (overwrite)
+        latest_path = checkpoint_dir / "latest.pth"
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+            "best_dice": best_dice,
+        }, latest_path)
+
+        # Save best checkpoint when Dice improves
+        if current_dice > best_dice:
+            best_dice = current_dice
             best_val_loss = val_loss_mean
             ckpt_path = checkpoint_dir / "best.pth"
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"  -> Saved best model to {ckpt_path}")
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_val_loss": best_val_loss,
+                "best_dice": best_dice,
+            }, ckpt_path)
+            print(f"  -> Saved best model (Dice={current_dice:.4f}) to {ckpt_path}")
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
+    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}, Best Dice_bin@0.3: {best_dice:.4f}")
 
 
 if __name__ == "__main__":
