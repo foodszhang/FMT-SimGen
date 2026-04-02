@@ -16,7 +16,7 @@ paths:
   splits_dir: train/splits
 training:
   batch_size: 8
-  lr: 0.001
+  lr: 0.0005
   max_epochs: 200
   scheduler: ReduceLROnPlateau
   scheduler_patience: 10
