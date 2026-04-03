@@ -144,7 +144,11 @@ tumor:
     3: 0.35
   shapes: ["sphere", "ellipsoid"]
   radius_range: [2.0, 3.0]
-  depth_range: [1.5, 4.0]
+  depth_range: [1.5, 8.0]
+  depth_distribution:
+    shallow: {range: [1.5, 3.5], weight: 0.35}
+    medium:  {range: [3.5, 6.0], weight: 0.40}
+    deep:    {range: [6.0, 8.0], weight: 0.25}
   min_inter_foci_distance_ratio: 1.5
   ellipsoid_axis_ratio: [1.2, 1.5]
   max_cluster_radius: 8.0

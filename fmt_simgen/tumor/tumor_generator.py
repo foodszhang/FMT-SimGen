@@ -142,7 +142,14 @@ class TumorSample:
 class TumorGenerator:
     """Generate tumor samples as collections of analytic foci."""
 
-    def __init__(self, config: Dict, atlas=None, mesh_bbox=None):
+    def __init__(
+        self,
+        config: Dict,
+        atlas=None,
+        mesh_bbox=None,
+        mesh_nodes=None,
+        tissue_labels=None,
+    ):
         """Initialize tumor generator.
 
         Parameters
@@ -154,6 +161,7 @@ class TumorGenerator:
             - shapes: List[str] - ["sphere", "ellipsoid"]
             - radius_range: List[float, float] - [min, max] in mm
             - depth_range: List[float, float] - [min, max]皮下深度 in mm
+            - depth_distribution: Dict - depth tier configuration
             - min_inter_foci_distance_ratio: float - ratio * 灶直径
             - ellipsoid_axis_ratio: List[float, float] - [rx_ratio, rz_ratio]
             - max_cluster_radius: float - max distance from anchor for multi-focus
@@ -163,10 +171,16 @@ class TumorGenerator:
         mesh_bbox : Dict, optional
             Mesh bounding box for depth estimation.
             {"min": [x_min, y_min, z_min], "max": [x_max, y_max, z_max]}
+        mesh_nodes : np.ndarray, optional
+            FEM mesh nodes [N×3] for organ constraint validation.
+        tissue_labels : np.ndarray, optional
+            Tissue labels [N] for mesh nodes.
         """
         self.config = config
         self.atlas = atlas
         self.mesh_bbox = mesh_bbox
+        self.mesh_nodes = mesh_nodes
+        self.tissue_labels = tissue_labels
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -176,7 +190,8 @@ class TumorGenerator:
             ShapeType(s) for s in config.get("shapes", ["sphere", "ellipsoid"])
         ]
         self.radius_range = config.get("radius_range", [1.0, 2.5])
-        self.depth_range = config.get("depth_range", [1.5, 4.0])
+        self.depth_range = config.get("depth_range", [1.5, 8.0])
+        self.depth_distribution = config.get("depth_distribution", {})
         self.min_inter_ratio = config.get("min_inter_foci_distance_ratio", 1.5)
         self.ellipsoid_ratio = config.get("ellipsoid_axis_ratio", [1.2, 1.5])
         self.max_cluster_radius = config.get("max_cluster_radius", 8.0)
@@ -184,7 +199,12 @@ class TumorGenerator:
 
         self._rng = np.random.default_rng()
 
-    def generate_sample(self, num_foci: Optional[int] = None) -> TumorSample:
+    def generate_sample(
+        self,
+        num_foci: Optional[int] = None,
+        depth_mm: Optional[float] = None,
+        depth_tier: Optional[str] = None,
+    ) -> TumorSample:
         """Generate a single tumor sample.
 
         For multi-focal samples, uses cluster-based placement where
@@ -195,6 +215,10 @@ class TumorGenerator:
         num_foci : int, optional
             If provided, forces the exact number of foci instead of
             randomly sampling from the distribution.
+        depth_mm : float, optional
+            If provided, forces the tumor depth in mm (from body surface).
+        depth_tier : str, optional
+            Depth tier name (shallow/medium/deep) for reporting.
 
         Returns
         -------
@@ -208,6 +232,7 @@ class TumorGenerator:
 
         foci: List[AnalyticFocus] = []
         cluster_radius = self.max_cluster_radius
+        organ_constraint_passed = True
 
         for focus_idx in range(num_foci):
             center = None
@@ -219,7 +244,9 @@ class TumorGenerator:
                 attempts += 1
 
                 if is_anchor:
-                    candidate_center, from_atlas = self._sample_position_with_source()
+                    candidate_center, from_atlas = self._sample_position_with_source(
+                        forced_depth=depth_mm
+                    )
                 else:
                     candidate_center = self._sample_cluster_position(
                         foci[0] if foci else None, cluster_radius
@@ -233,11 +260,29 @@ class TumorGenerator:
                     if depth < self.depth_range[0] or depth > self.depth_range[1]:
                         if is_anchor:
                             candidate_center, from_atlas = (
-                                self._sample_position_with_source()
+                                self._sample_position_with_source(forced_depth=depth_mm)
                             )
                         else:
                             candidate_center = None
                         continue
+
+                # Check organ boundary constraint for anchor focus
+                if is_anchor and self.mesh_nodes is not None:
+                    if not self.is_valid_placement(candidate_center, radius):
+                        # Retry with fallback depth
+                        if depth_mm is not None and depth_mm > 3.5:
+                            fallback_depth = 3.0
+                            candidate_center, from_atlas = (
+                                self._sample_position_with_source(forced_depth=fallback_depth)
+                            )
+                            if candidate_center is not None:
+                                depth = self._get_depth_at_position(candidate_center)
+                                if depth < self.depth_range[0] or depth > self.depth_range[1]:
+                                    candidate_center = None
+                                    continue
+                        else:
+                            candidate_center = None
+                            continue
 
                 params = self._get_shape_params(shape, radius)
                 new_focus = AnalyticFocus(
@@ -266,7 +311,64 @@ class TumorGenerator:
                         )
                         foci.append(new_focus)
 
-        return TumorSample(foci=foci)
+            if center is None:
+                organ_constraint_passed = False
+
+        # Store metadata in the sample via a wrapper or side-effect
+        sample = TumorSample(foci=foci)
+        sample._depth_tier = depth_tier
+        sample._depth_mm = depth_mm
+        sample._organ_constraint_passed = organ_constraint_passed
+        return sample
+
+    def is_valid_placement(self, center: np.ndarray, radius: float) -> bool:
+        """Check if tumor placement is valid (no cross-organ boundary).
+
+        Rules:
+        - Only soft tissue (skin, muscle, fat, tongue) -> OK
+        - Involves 1 organ type -> OK
+        - Involves 2+ different organ types -> Invalid
+
+        Biological basis:
+        - Subcutaneous xenograft stays within single tissue layer
+        - Orthotopic tumors grow within specific organ, not cross-boundary
+        - Different organs have very different optical properties
+          (muscle mu_a=0.087 vs liver mu_a=0.352), breaking FEM homogeneity
+
+        Parameters
+        ----------
+        center : np.ndarray
+            Tumor center [3] in mm.
+        radius : float
+            Tumor radius in mm.
+
+        Returns
+        -------
+        bool
+            True if placement is valid.
+        """
+        if self.mesh_nodes is None or self.tissue_labels is None:
+            return True  # No mesh available, skip validation
+
+        # Find nodes within 3-sigma (4*radius) of center
+        cutoff = 4.0 * radius
+        dists = np.linalg.norm(self.mesh_nodes - center, axis=1)
+        affected = dists < cutoff
+
+        if not np.any(affected):
+            return True
+
+        tissues = self.tissue_labels[affected]
+        unique_tissues = set(np.unique(tissues))
+
+        # Soft tissue labels that can be crossed freely
+        soft_tissue_labels = {1, 11, 12, 14}  # skin, muscle, fat, tongue
+
+        # Remove background and soft tissue, get organ labels
+        organ_labels = unique_tissues - soft_tissue_labels - {0}
+
+        # Allow at most 1 organ type
+        return len(organ_labels) <= 1
 
     def _sample_cluster_position(
         self, anchor: Optional[AnalyticFocus], cluster_radius: float
@@ -328,8 +430,15 @@ class TumorGenerator:
         pos, _ = self._sample_position_with_source()
         return pos
 
-    def _sample_position_with_source(self) -> Tuple[np.ndarray, bool]:
+    def _sample_position_with_source(
+        self, forced_depth: Optional[float] = None
+    ) -> Tuple[np.ndarray, bool]:
         """Sample a position and return whether it came from atlas.
+
+        Parameters
+        ----------
+        forced_depth : float, optional
+            If provided, force the depth in mm from body surface.
 
         Returns
         -------
@@ -337,13 +446,23 @@ class TumorGenerator:
             (position [3] in mm, actually_from_atlas bool)
         """
         if self.atlas is not None:
-            pos, used_atlas = self._sample_from_atlas_with_flag()
+            pos, used_atlas = self._sample_from_atlas_with_flag(
+                forced_depth=forced_depth
+            )
             return pos, used_atlas
         else:
-            return self._sample_from_config(), False
+            pos = self._sample_from_config(forced_depth=forced_depth)
+            return pos, False
 
-    def _sample_from_atlas_with_flag(self) -> Tuple[np.ndarray, bool]:
+    def _sample_from_atlas_with_flag(
+        self, forced_depth: Optional[float] = None
+    ) -> Tuple[np.ndarray, bool]:
         """Attempt to sample from atlas subcutaneous region.
+
+        Parameters
+        ----------
+        forced_depth : float, optional
+            If provided, force the depth in mm from body surface.
 
         Returns
         -------
@@ -353,13 +472,19 @@ class TumorGenerator:
         """
         region = self._rng.choice(self.regions)
 
+        # Use forced depth or fall back to config range
+        depth_range = (
+            (forced_depth, forced_depth) if forced_depth is not None
+            else tuple(self.depth_range)
+        )
+
         subq_mask = self.atlas.get_subcutaneous_region(
-            depth_range_mm=tuple(self.depth_range),
+            depth_range_mm=depth_range,
             regions=[region],
         )
 
         if not np.any(subq_mask):
-            return self._sample_from_config(), False
+            return self._sample_from_config(forced_depth=forced_depth), False
 
         voxel_coords = np.argwhere(subq_mask)
         idx = self._rng.integers(len(voxel_coords))
@@ -371,7 +496,9 @@ class TumorGenerator:
             [x * voxel_size, y * voxel_size, z * voxel_size], dtype=np.float64
         ), True
 
-    def _sample_from_config(self) -> np.ndarray:
+    def _sample_from_config(
+        self, forced_depth: Optional[float] = None
+    ) -> np.ndarray:
         """Sample position from config-based ranges (fallback).
 
         Mesh coordinate ranges (0-based physical coords):
@@ -380,15 +507,27 @@ class TumorGenerator:
         Dorsal side = high Z values (Z > 12mm)
         Lateral sides = extreme X values (X < 8 or X > 28)
         Trunk region = Y in [20, 70] mm (exclude head and tail)
+
+        Parameters
+        ----------
+        forced_depth : float, optional
+            If provided, force the depth in mm from body surface.
         """
         region = self._rng.choice(self.regions) if self.regions else "dorsal"
 
         if region == "dorsal":
+            # For dorsal, Z corresponds to depth from back surface
+            # Body surface is at Z ≈ 10-11mm, so depth = Z - 10
+            if forced_depth is not None:
+                z_center = 10.0 + forced_depth
+                z_center = max(10.5, min(19.0, z_center))
+            else:
+                z_center = self._rng.uniform(15.0, 19.0)
             return np.array(
                 [
                     self._rng.uniform(10.0, 28.0),
                     self._rng.uniform(20.0, 70.0),
-                    self._rng.uniform(15.0, 19.0),
+                    z_center,
                 ],
                 dtype=np.float64,
             )
@@ -399,20 +538,30 @@ class TumorGenerator:
                     self._rng.uniform(28.0, 33.0),
                 ]
             )
+            if forced_depth is not None:
+                z_center = 10.0 + forced_depth
+                z_center = max(10.5, min(14.0, z_center))
+            else:
+                z_center = self._rng.uniform(8.0, 14.0)
             return np.array(
                 [
                     x_side,
                     self._rng.uniform(20.0, 70.0),
-                    self._rng.uniform(8.0, 14.0),
+                    z_center,
                 ],
                 dtype=np.float64,
             )
         else:
+            if forced_depth is not None:
+                z_center = 10.0 + forced_depth
+                z_center = max(10.5, min(19.0, z_center))
+            else:
+                z_center = self._rng.uniform(2.0, 5.0)
             return np.array(
                 [
                     self._rng.uniform(10.0, 28.0),
                     self._rng.uniform(20.0, 70.0),
-                    self._rng.uniform(2.0, 5.0),
+                    z_center,
                 ],
                 dtype=np.float64,
             )
