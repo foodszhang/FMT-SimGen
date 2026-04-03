@@ -42,8 +42,26 @@ def main():
         shutil.rmtree(samples_dir)
     samples_dir.mkdir(parents=True, exist_ok=True)
 
+    # Find shared directory (try multiple possible locations)
+    possible_shared_dirs = [
+        Path("output/shared"),
+        output_path / "shared",
+        Path("assets/shared"),
+    ]
+    shared_dir = None
+    for d in possible_shared_dirs:
+        if d.exists() and (d / "mesh.npz").exists():
+            shared_dir = d
+            break
+    if shared_dir is None:
+        raise FileNotFoundError(
+            f"Cannot find shared mesh directory. Tried: {possible_shared_dirs}. "
+            f"Please ensure mesh and system matrix exist."
+        )
+    print(f"Using shared directory: {shared_dir}")
+
     # Load mesh
-    mesh_data = np.load("output/shared/mesh.npz")
+    mesh_data = np.load(shared_dir / "mesh.npz")
     nodes = mesh_data["nodes"]
     elements = mesh_data["elements"]
     surface_faces = mesh_data["surface_faces"]
@@ -52,7 +70,7 @@ def main():
     # Setup physics
     opt_mgr = OpticalParameterManager(config["physics"]["tissues"], n=config["physics"]["n"])
     solver = FEMSolver(nodes, elements, surface_faces, tissue_labels, opt_mgr)
-    A = sp.load_npz("output/shared/system_matrix.A.npz")
+    A = sp.load_npz(shared_dir / "system_matrix.A.npz")
     solver._forward_matrix = A
 
     # Voxel grid config (matches existing samples: 150x151x150, spacing=0.2mm)

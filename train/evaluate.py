@@ -22,11 +22,16 @@ from train.metrics.evaluation import evaluate_batch, summarize_metrics
 
 
 def load_manifest(samples_dir: Path) -> dict | None:
-    """Load dataset manifest if it exists."""
-    manifest_path = Path("output/dataset_manifest.json")
-    if manifest_path.exists():
-        with open(manifest_path) as f:
-            return json.load(f)
+    """Load dataset manifest from multiple possible locations."""
+    candidates = [
+        Path("output/dataset_manifest.json"),
+        Path("data/dataset_manifest.json"),
+        samples_dir.parent / "dataset_manifest.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            with open(p) as f:
+                return json.load(f)
     return None
 
 
@@ -54,7 +59,8 @@ def evaluate(checkpoint_path: str | Path, split: str = "val"):
         samples_dir=samples_dir,
         split_file=split_file,
     )
-    loader = DataLoader(dataset, batch_size=cfg["training"]["batch_size"], shuffle=False)
+    # Use batch_size=1 so metrics align 1:1 with sample names for per-foci grouping
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     A = dataset.A.cuda()
     L = dataset.L.cuda()

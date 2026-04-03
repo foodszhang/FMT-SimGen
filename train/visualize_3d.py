@@ -335,31 +335,41 @@ def main():
 
     print(f"\nVisualizing {len(balanced_indices)} val samples...\n")
 
-    for count_idx, idx in enumerate(balanced_indices):
-        # Re-iterate to the correct batch
-        val_loader_iter = iter(val_loader)
-        for _ in range(idx + 1):
-            batch = next(val_loader_iter)
+    # Pre-compute all needed results in a single pass (fixes O(n^2) traversal bug)
+    needed_indices = set(balanced_indices)
+    cached_results = {}  # idx -> (gt_np, pred_np, dice, recall, prec)
 
-        b = batch["b"].cuda()
-        gt = batch["gt"].cuda()
-        X0 = torch.zeros(1, n_nodes, 1, device="cuda")
+    with torch.no_grad():
+        for idx, batch in enumerate(val_loader):
+            if idx not in needed_indices:
+                continue
 
-        with torch.no_grad():
+            b = batch["b"].cuda()
+            gt = batch["gt"].cuda()
+            X0 = torch.zeros(1, n_nodes, 1, device="cuda")
             pred = model(X0, b)
             pred = torch.clamp(pred, min=0.0, max=1.0)
 
-        gt_np = gt.squeeze().cpu().numpy()
-        pred_np = pred.squeeze().cpu().numpy()
+            gt_np = gt.squeeze().cpu().numpy()
+            pred_np = pred.squeeze().cpu().numpy()
+            dice, recall, prec = compute_metrics(gt_np, pred_np)
+            cached_results[idx] = (gt_np, pred_np, dice, recall, prec)
+
+            if len(cached_results) == len(needed_indices):
+                break
+
+    # Render cached results
+    for count_idx, idx in enumerate(balanced_indices):
+        gt_np, pred_np, dice, recall, prec = cached_results[idx]
         sample_name = val_names[idx]
 
         # Get foci count for title
         foci_label = ""
+        n_foci = None
         if manifest and sample_name in manifest["samples"]:
             n_foci = manifest["samples"][sample_name]["num_foci"]
             foci_label = f" [{n_foci}-Foci]"
 
-        dice, recall, prec = compute_metrics(gt_np, pred_np)
         print(
             f"{sample_name}{foci_label}: "
             f"Dice={dice:.3f} Recall={recall:.3f} "
