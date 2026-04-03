@@ -149,6 +149,7 @@ class TumorGenerator:
         mesh_bbox=None,
         mesh_nodes=None,
         tissue_labels=None,
+        elements=None,
     ):
         """Initialize tumor generator.
 
@@ -181,6 +182,7 @@ class TumorGenerator:
         self.mesh_bbox = mesh_bbox
         self.mesh_nodes = mesh_nodes
         self.tissue_labels = tissue_labels
+        self.elements = elements
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -269,17 +271,22 @@ class TumorGenerator:
                 # Check organ boundary constraint for anchor focus
                 if is_anchor and self.mesh_nodes is not None:
                     if not self.is_valid_placement(candidate_center, radius):
-                        # Retry with fallback depth
-                        if depth_mm is not None and depth_mm > 3.5:
-                            fallback_depth = 3.0
-                            candidate_center, from_atlas = (
-                                self._sample_position_with_source(forced_depth=fallback_depth)
+                        # Try multiple fallback depths before giving up
+                        fallback_depths = [3.0, 2.5, 2.0, 1.5]
+                        valid_fallback = None
+                        for fb_depth in fallback_depths:
+                            fb_center, fb_from_atlas = (
+                                self._sample_position_with_source(forced_depth=fb_depth)
                             )
-                            if candidate_center is not None:
-                                depth = self._get_depth_at_position(candidate_center)
-                                if depth < self.depth_range[0] or depth > self.depth_range[1]:
-                                    candidate_center = None
+                            if fb_center is not None:
+                                fb_depth_val = self._get_depth_at_position(fb_center)
+                                if not (self.depth_range[0] <= fb_depth_val <= self.depth_range[1]):
                                     continue
+                                if self.is_valid_placement(fb_center, radius):
+                                    valid_fallback = (fb_center, fb_from_atlas)
+                                    break
+                        if valid_fallback is not None:
+                            candidate_center, from_atlas = valid_fallback
                         else:
                             candidate_center = None
                             continue
@@ -350,15 +357,18 @@ class TumorGenerator:
         if self.mesh_nodes is None or self.tissue_labels is None:
             return True  # No mesh available, skip validation
 
-        # Find nodes within 3-sigma (4*radius) of center
+        # Find elements whose centroids are within 4*radius of center
+        # (tissue_labels is per-element, not per-node)
         cutoff = 4.0 * radius
-        dists = np.linalg.norm(self.mesh_nodes - center, axis=1)
-        affected = dists < cutoff
+        elements = self.elements  # [N_elements x 4]
+        centroids = self.mesh_nodes[elements].mean(axis=1)  # [N_elements x 3]
+        dists = np.linalg.norm(centroids - center, axis=1)
+        affected_elements = dists < cutoff
 
-        if not np.any(affected):
+        if not np.any(affected_elements):
             return True
 
-        tissues = self.tissue_labels[affected]
+        tissues = self.tissue_labels[affected_elements]
         unique_tissues = set(np.unique(tissues))
 
         # Soft tissue labels that can be crossed freely

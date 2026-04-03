@@ -105,6 +105,7 @@ def main():
         mesh_bbox=mesh_bbox,
         mesh_nodes=nodes,
         tissue_labels=tissue_labels,
+        elements=elements,
     )
 
     # ============ Deterministic foci allocation ============
