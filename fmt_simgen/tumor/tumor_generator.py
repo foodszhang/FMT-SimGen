@@ -25,6 +25,13 @@ class ShapeType(Enum):
     ELLIPSOID = "ellipsoid"
 
 
+class SourceType(Enum):
+    """Supported tumor source types."""
+
+    GAUSSIAN = "gaussian"
+    UNIFORM = "uniform"
+
+
 @dataclass
 class AnalyticFocus:
     """Single tumor focus defined as an analytic function in 3D space."""
@@ -46,12 +53,26 @@ class AnalyticFocus:
         np.ndarray
             Function values [N] at each coordinate.
         """
-        if self.shape == ShapeType.SPHERE:
+        source_type = self.params.get("source_type", "gaussian")
+
+        if source_type == "uniform":
+            return self._evaluate_uniform(coords)
+        elif self.shape == ShapeType.SPHERE:
             return self._evaluate_sphere(coords)
         elif self.shape == ShapeType.ELLIPSOID:
             return self._evaluate_ellipsoid(coords)
         else:
             raise ValueError(f"Unknown shape type: {self.shape}")
+
+    def _evaluate_uniform(self, coords: np.ndarray) -> np.ndarray:
+        """Evaluate uniform (binary) source within radius.
+
+        d(x) = 1.0 for ||x - center|| <= radius
+               0.0 otherwise
+        """
+        radius = self.params.get("radius", 1.0)
+        distances = np.linalg.norm(coords - self.center, axis=1)
+        return np.where(distances <= radius, 1.0, 0.0)
 
     def _evaluate_sphere(self, coords: np.ndarray) -> np.ndarray:
         """Evaluate Gaussian sphere with sigma = radius, truncated at 4*sigma.
@@ -128,11 +149,19 @@ class TumorSample:
         """Convert to dictionary for JSON serialization."""
         return {
             "num_foci": len(self.foci),
+            "depth_tier": getattr(self, "_depth_tier", None),
+            "depth_mm": getattr(self, "_depth_mm", None),
+            "source_type": self.foci[0].params.get("source_type", "gaussian") if self.foci else "gaussian",
             "foci": [
                 {
                     "center": focus.center.tolist(),
                     "shape": focus.shape.value,
                     "params": focus.params,
+                    # Stage 2 voxel generation needs:
+                    "radius": focus.params.get("radius"),
+                    "rx": focus.params.get("rx"),
+                    "ry": focus.params.get("ry"),
+                    "rz": focus.params.get("rz"),
                 }
                 for focus in self.foci
             ],
@@ -620,17 +649,20 @@ class TumorGenerator:
         Dict
             Shape parameters.
         """
+        source_type = self.config.get("source_type", "gaussian")
+        params = {"source_type": source_type}
+
         if shape == ShapeType.SPHERE:
-            return {"radius": base_radius}
+            params["radius"] = base_radius
         elif shape == ShapeType.ELLIPSOID:
             rx_ratio, rz_ratio = self.ellipsoid_ratio
-            return {
-                "rx": base_radius * rx_ratio,
-                "ry": base_radius,
-                "rz": base_radius * rz_ratio,
-            }
+            params["rx"] = base_radius * rx_ratio
+            params["ry"] = base_radius
+            params["rz"] = base_radius * rz_ratio
         else:
-            return {"radius": base_radius}
+            params["radius"] = base_radius
+
+        return params
 
     def _check_constraints(self, foci_list: List[AnalyticFocus]) -> bool:
         """Check if foci satisfy inter-foci distance constraints.

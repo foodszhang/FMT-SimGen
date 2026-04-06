@@ -6,7 +6,7 @@ This script generates N tumor samples with forward measurements.
 Run after 01_generate_mesh.py.
 
 Usage:
-    python scripts/02_generate_dataset.py [--num_samples N]
+    python scripts/02_generate_dataset.py --config config/gaussian_1000.yaml
 """
 
 import sys
@@ -19,8 +19,50 @@ import yaml
 from fmt_simgen.dataset.builder import DatasetBuilder
 
 
+def deep_merge(base: dict, override: dict) -> None:
+    """Recursively merge override into base (in-place)."""
+    for k, v in override.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+
+def load_config_with_inheritance(config_path: str) -> dict:
+    """Load configuration file with _base_ inheritance support.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the config file.
+
+    Returns
+    -------
+    dict
+        Merged configuration dictionary.
+    """
+    config_path = Path(config_path)
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    base_name = cfg.pop("_base_", None)
+    if base_name:
+        base_path = config_path.parent / base_name
+        base_cfg = load_config_with_inheritance(str(base_path))
+        deep_merge(base_cfg, cfg)
+        return base_cfg
+    return cfg
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate FMT dataset samples")
+    parser.add_argument(
+        "--config",
+        "-c",
+        type=str,
+        default="config/default.yaml",
+        help="Path to experiment config file",
+    )
     parser.add_argument(
         "--num_samples",
         "-n",
@@ -30,10 +72,12 @@ def main():
     )
     args = parser.parse_args()
 
-    config_path = Path(__file__).parent.parent / "config" / "default.yaml"
+    config_path = Path(__file__).parent.parent / args.config
+    config = load_config_with_inheritance(str(config_path))
 
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    experiment_name = config.get("dataset", {}).get("experiment_name", "default")
+    print(f"Experiment: {experiment_name}")
+    print(f"Source type: {config.get('tumor', {}).get('source_type', 'gaussian')}")
 
     builder = DatasetBuilder(config)
 

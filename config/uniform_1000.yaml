@@ -1,0 +1,13 @@
+# 均匀源 1000 样本实验
+_base_: default.yaml
+
+tumor:
+  source_type: "uniform"  # 均匀源：肿瘤区域内 = 1，外 = 0
+
+dataset:
+  num_samples: 1000
+  experiment_name: "uniform_1000"
+
+quality_filter:
+  enabled: true
+  min_b_max: 0.001

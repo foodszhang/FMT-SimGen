@@ -14,6 +14,7 @@ Each sample produces:
 
 import numpy as np
 import json
+import random
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass
@@ -54,6 +55,7 @@ class DatasetBuilder:
         self.physics_config = config.get("physics", {})
         self.tumor_config = config.get("tumor", {})
         self.dataset_config = config.get("dataset", {})
+        self.quality_config = config.get("quality_filter", {})
 
         self.atlas: Optional[DigimouseAtlas] = None
         self.mesh_generator: Optional[MeshGenerator] = None
@@ -190,9 +192,14 @@ class DatasetBuilder:
 
         voxel_spacing = self.dataset_config.get("voxel_spacing", 0.1)
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 40.0)
-        output_path = Path(self.dataset_config.get("output_path", "data/"))
 
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Experiment-isolated output: data/{experiment_name}/samples/
+        experiment_name = self.dataset_config.get("experiment_name", "default")
+        base_output = Path(self.dataset_config.get("output_path", "data/"))
+        experiment_output = base_output / experiment_name
+        samples_output = experiment_output / "samples"
+
+        samples_output.mkdir(parents=True, exist_ok=True)
 
         mesh_center = self._mesh_data.nodes.mean(axis=0)
         roi_half = roi_size / 2.0
@@ -210,28 +217,57 @@ class DatasetBuilder:
         mesh_max = self._mesh_data.nodes.max(axis=0)
         mesh_bbox = {"min": mesh_min.tolist(), "max": mesh_max.tolist()}
 
+        # FIXED: Pass mesh_nodes, tissue_labels, elements for organ constraint validation
         self.tumor_generator = TumorGenerator(
             config=self.tumor_config,
             atlas=self.atlas,
             mesh_bbox=mesh_bbox,
+            mesh_nodes=self._mesh_data.nodes,
+            tissue_labels=self._mesh_data.tissue_labels,
+            elements=self._mesh_data.elements,
         )
 
         dual_sampler = DualSampler(
             nodes=self._mesh_data.nodes, voxel_grid_config=voxel_grid_config
         )
 
+        # Quality filter settings
+        filter_enabled = self.quality_config.get("enabled", False)
+        min_b_max = self.quality_config.get("min_b_max", 0.001)
+        min_gt_frac = self.quality_config.get("min_gt_nonzero_frac", 0.001)
+        max_retries = self.quality_config.get("max_retries", 5)
+
         samples: List[SampleOutput] = []
+        rejected_count = 0
 
         for i in range(num_samples):
             print(f"  Generating sample {i + 1}/{num_samples}...")
 
-            tumor_sample = self.tumor_generator.generate_sample()
+            for attempt in range(max_retries + 1):
+                tumor_sample = self.tumor_generator.generate_sample()
 
-            gt_nodes = dual_sampler.sample_to_nodes(tumor_sample)
+                gt_nodes = dual_sampler.sample_to_nodes(tumor_sample)
 
-            gt_voxels = dual_sampler.sample_to_voxels(tumor_sample)
+                gt_voxels = dual_sampler.sample_to_voxels(tumor_sample)
 
-            measurement_b = self.fem_solver.forward(gt_nodes)
+                measurement_b = self.fem_solver.forward(gt_nodes)
+
+                b_max = float(np.max(np.abs(measurement_b)))
+                gt_nonzero_frac = float(np.count_nonzero(gt_nodes)) / len(gt_nodes)
+
+                if not filter_enabled:
+                    break
+                if b_max >= min_b_max and gt_nonzero_frac >= min_gt_frac:
+                    break
+                if attempt < max_retries:
+                    print(f"    [FILTER] Sample {i} rejected (b_max={b_max:.6f}, "
+                          f"gt_frac={gt_nonzero_frac:.6f}), retrying {attempt + 1}/{max_retries}")
+                else:
+                    print(f"    [FILTER] Sample {i} kept after {max_retries} retries "
+                          f"(b_max={b_max:.6f})")
+
+            if filter_enabled and b_max < min_b_max:
+                rejected_count += 1
 
             sample = SampleOutput(
                 measurement_b=measurement_b,
@@ -241,13 +277,87 @@ class DatasetBuilder:
             )
             samples.append(sample)
 
-            self._save_sample(sample, output_path, i)
+            self._save_sample(sample, samples_output, i)
 
             self._validate_sample(sample, self._mesh_data.nodes)
 
-        print(f"Dataset saved to {output_path}")
+        print(f"Dataset saved to {experiment_output}")
+
+        if rejected_count > 0:
+            print(f"[WARNING] {rejected_count} samples had b_max below threshold")
+
+        # Generate train/val splits (80/20)
+        self._generate_splits(experiment_output, len(samples))
+
+        # Generate manifest
+        self._generate_manifest(experiment_output, samples)
 
         return samples
+
+    def _generate_splits(self, experiment_output: Path, num_samples: int) -> None:
+        """Generate train/val split files.
+
+        Parameters
+        ----------
+        experiment_output : Path
+            Path to experiment output directory.
+        num_samples : int
+            Total number of samples.
+        """
+        sample_ids = [f"sample_{i:04d}" for i in range(num_samples)]
+        random.seed(42)
+        random.shuffle(sample_ids)
+        split_idx = int(len(sample_ids) * 0.8)
+        train_ids = sorted(sample_ids[:split_idx])
+        val_ids = sorted(sample_ids[split_idx:])
+
+        splits_dir = experiment_output / "splits"
+        splits_dir.mkdir(parents=True, exist_ok=True)
+        with open(splits_dir / "train.txt", "w") as f:
+            f.write("\n".join(train_ids) + "\n")
+        with open(splits_dir / "val.txt", "w") as f:
+            f.write("\n".join(val_ids) + "\n")
+        print(f"Splits: {len(train_ids)} train, {len(val_ids)} val")
+
+    def _generate_manifest(self, experiment_output: Path, samples: List[SampleOutput]) -> None:
+        """Generate dataset manifest JSON.
+
+        Parameters
+        ----------
+        experiment_output : Path
+            Path to experiment output directory.
+        samples : List[SampleOutput]
+            List of generated samples.
+        """
+        manifest = {
+            "experiment_name": self.dataset_config.get("experiment_name", "default"),
+            "source_type": self.tumor_config.get("source_type", "gaussian"),
+            "num_samples": len(samples),
+            "mesh_nodes": int(self._mesh_data.nodes.shape[0]),
+            "mesh_surface_nodes": int(len(self._mesh_data.surface_node_indices)),
+            "config": self.config,
+            "samples": []
+        }
+
+        for i, sample in enumerate(samples):
+            tumor_params = sample.tumor_params
+            manifest["samples"].append({
+                "id": f"sample_{i:04d}",
+                "num_foci": tumor_params["num_foci"],
+                "depth_tier": tumor_params.get("depth_tier", "unknown"),
+                "depth_mm": tumor_params.get("depth_mm"),
+                "b_max": float(np.max(np.abs(sample.measurement_b))),
+                "b_mean": float(np.mean(np.abs(sample.measurement_b))),
+                "gt_max": float(np.max(sample.gt_nodes)),
+                "gt_nonzero_count": int(np.count_nonzero(sample.gt_nodes)),
+                "gt_nonzero_frac": float(np.count_nonzero(sample.gt_nodes)) / len(sample.gt_nodes),
+                "has_gt_voxels": True,
+            })
+
+        manifest_path = experiment_output / "dataset_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+        print(f"Manifest saved to {manifest_path}")
 
     def _setup_atlas(self) -> None:
         """Setup atlas loader."""
@@ -321,19 +431,29 @@ class DatasetBuilder:
             FEM mesh nodes [N x 3].
         """
         warnings = []
+        source_type = sample.tumor_params.get("source_type", "gaussian")
 
         for focus in sample.tumor_params["foci"]:
             center = np.array(focus["center"])
-            radius = focus["params"].get("radius", 0.5)
-            sigma = radius
-            cutoff = 3.0 * sigma
+            # Get radius - for ellipsoids it may be None, use rx as fallback
+            radius = focus.get("radius")
+            if radius is None:
+                # Ellipsoid: use rx as characteristic radius
+                radius = focus.get("rx", 0.5)
+
+            # For uniform source, skip sigma-based validation
+            if source_type == "uniform":
+                cutoff = radius
+            else:
+                sigma = radius
+                cutoff = 3.0 * sigma
 
             dists = np.linalg.norm(nodes - center, axis=1)
             nodes_inside = np.sum(dists <= cutoff)
 
             if nodes_inside < 3:
                 warnings.append(
-                    f"  WARNING: Focus at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) has only {nodes_inside} nodes in 3sigma={cutoff:.1f}mm range"
+                    f"  WARNING: Focus at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) has only {nodes_inside} nodes in cutoff={cutoff:.1f}mm range"
                 )
 
         gt_nonzero = np.count_nonzero(sample.gt_nodes)

@@ -1,3 +1,7 @@
+# === 基础配置模板 ===
+# 不要直接使用此文件生成数据。
+# 复制为 config/experiment_name.yaml 后修改。
+
 atlas:
   path: "/home/foods/pro/mcx_simulation/ct_data/atlas_380x992x208.hdr"
   voxel_size: 0.1
@@ -137,6 +141,7 @@ physics:
       n: 1.38
 
 tumor:
+  source_type: "gaussian"   # "gaussian" or "uniform"
   regions: ["dorsal", "lateral"]
   num_foci_distribution:
     1: 0.30
@@ -160,3 +165,10 @@ dataset:
   voxel_spacing: 0.2
   voxel_grid_roi_size_mm: 30.0
   output_path: "data/"
+  experiment_name: "default"  # 子目录名，最终输出到 data/{experiment_name}/
+
+quality_filter:
+  enabled: true
+  min_b_max: 0.001           # measurement_b 的最小 max 值
+  min_gt_nonzero_frac: 0.001  # gt_nodes 非零节点占比下限
+  max_retries: 5             # 质量不过关时的重试次数
