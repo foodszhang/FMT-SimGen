@@ -83,6 +83,10 @@ class DigimouseAtlas:
         self._affine: Optional[np.ndarray] = None
         self._info: Optional[AtlasInfo] = None
         self._label_stats: Dict[int, LabelStats] = {}
+        # ── Caches (lazy-initialized) ──
+        self._edt: Optional[np.ndarray] = None  # Euclidean distance transform
+        self._subq_cache: Dict[tuple, np.ndarray] = {}  # subcutaneous mask cache
+        self._subq_coords_cache: Dict[tuple, np.ndarray] = {}  # physical coords cache
 
     def load(self) -> "DigimouseAtlas":
         """Load the atlas file.
@@ -364,6 +368,22 @@ class DigimouseAtlas:
         """
         return self.volume != 0
 
+    def _ensure_edt(self) -> np.ndarray:
+        """Compute EDT lazily (only once), then cache it.
+
+        Returns
+        -------
+        np.ndarray
+            Euclidean distance transform of body mask.
+        """
+        if self._edt is None:
+            logger.info("  Computing EDT (one-time, ~5-10s)...")
+            body_mask = self.volume != 0
+            self._edt = ndimage.distance_transform_edt(body_mask).astype(np.float32)
+            logger.info(f"  EDT done. Shape={self._edt.shape}, "
+                        f"max_dist={self._edt.max():.1f} voxels")
+        return self._edt
+
     def get_subcutaneous_region(
         self,
         depth_range_mm: Tuple[float, float] = (1.0, 3.0),
@@ -400,6 +420,17 @@ class DigimouseAtlas:
         if regions is None:
             regions = ["dorsal", "lateral"]
 
+        # Build cache key from all filtering parameters
+        cache_key = (
+            tuple(depth_range_mm),
+            tuple(sorted(regions)),
+            tuple(sorted(exclude_labels)) if exclude_labels else (),
+            torso_only,
+        )
+
+        if cache_key in self._subq_cache:
+            return self._subq_cache[cache_key]
+
         voxel_size = self.voxel_size
         depth_min_vox = max(1, int(depth_range_mm[0] / voxel_size))
         depth_max_vox = max(2, int(depth_range_mm[1] / voxel_size))
@@ -414,7 +445,8 @@ class DigimouseAtlas:
 
         body_mask = vol != 0
 
-        dist = ndimage.distance_transform_edt(body_mask)
+        # Use cached EDT instead of recomputing
+        dist = self._ensure_edt()
 
         subq_mask = body_mask & (dist >= depth_min_vox) & (dist <= depth_max_vox)
 
@@ -471,7 +503,47 @@ class DigimouseAtlas:
             f"({voxel_count * voxel_size**3:.2f} mm³)"
         )
 
+        self._subq_cache[cache_key] = subq_mask
         return subq_mask
+
+    def get_subcutaneous_coords(
+        self,
+        depth_range_mm: Tuple[float, float],
+        regions: List[str],
+        **kwargs,
+    ) -> np.ndarray:
+        """Return pre-computed physical coordinates for fast random sampling.
+
+        Caches the result so repeated calls with same params are O(1).
+
+        Parameters
+        ----------
+        depth_range_mm : Tuple[float, float]
+            Depth range from surface in millimeters.
+        regions : List[str]
+            Body regions to include.
+        **kwargs : dict
+            Forwarded to get_subcutaneous_region (exclude_labels, torso_only).
+
+        Returns
+        -------
+        np.ndarray
+            Physical coordinates [M, 3] in mm.
+        """
+        cache_key = (tuple(depth_range_mm), tuple(sorted(regions)))
+
+        if cache_key not in self._subq_coords_cache:
+            mask = self.get_subcutaneous_region(depth_range_mm, regions, **kwargs)
+            voxel_coords = np.argwhere(mask)  # [M, 3] voxel indices
+            # Convert to physical coordinates
+            physical_coords = voxel_coords.astype(np.float64) * self.voxel_size
+            self._subq_coords_cache[cache_key] = physical_coords
+            logger.info(
+                f"  Cached {len(physical_coords)} subcutaneous coords "
+                f"for depth={depth_range_mm}, regions={regions}"
+            )
+
+        return self._subq_coords_cache[cache_key]
 
     def get_torso_slice(
         self, axis: str = "z", position: float = 0.5

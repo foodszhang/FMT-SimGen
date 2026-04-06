@@ -8,9 +8,12 @@ This module implements dual-carrier GT sampling:
 Both GTs come from the same analytic tumor function, ensuring alignment.
 """
 
+import logging
 import numpy as np
-from typing import Dict, Tuple, NamedTuple
+from typing import Dict, Tuple
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,6 +40,21 @@ class DualSampler:
         """
         self.nodes = nodes
         self.voxel_grid_config = voxel_grid_config
+
+        # ── Precompute voxel grid coordinates (once) ──
+        nx, ny, nz = voxel_grid_config.shape
+        spacing = voxel_grid_config.spacing
+        offset = voxel_grid_config.offset
+
+        grid_x = np.arange(nx) * spacing + offset[0] + spacing / 2
+        grid_y = np.arange(ny) * spacing + offset[1] + spacing / 2
+        grid_z = np.arange(nz) * spacing + offset[2] + spacing / 2
+
+        gx, gy, gz = np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
+        self._voxel_coords = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+        logger.info(
+            f"  Voxel grid: {nx}×{ny}×{nz} = {len(self._voxel_coords)} points (precomputed)"
+        )
 
     def sample_to_nodes(self, tumor_sample) -> np.ndarray:
         """Sample tumor at FEM node coordinates.
@@ -67,19 +85,7 @@ class DualSampler:
             Ground truth at voxels [Nx × Ny × Nz].
         """
         nx, ny, nz = self.voxel_grid_config.shape
-        spacing = self.voxel_grid_config.spacing
-        offset = self.voxel_grid_config.offset
-
-        grid_x = np.arange(nx) * spacing + offset[0] + spacing / 2
-        grid_y = np.arange(ny) * spacing + offset[1] + spacing / 2
-        grid_z = np.arange(nz) * spacing + offset[2] + spacing / 2
-
-        gx, gy, gz = np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
-
-        coords = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
-
-        values = tumor_sample.evaluate(coords)
-
+        values = tumor_sample.evaluate(self._voxel_coords)
         return values.reshape(nx, ny, nz)
 
     def sample_dual(self, tumor_sample) -> Dict[str, np.ndarray]:

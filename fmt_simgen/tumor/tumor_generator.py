@@ -12,10 +12,14 @@ Supported shapes:
 - ellipsoid: Gaussian ellipsoid with axis ratios
 """
 
+import logging
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from scipy.spatial import cKDTree
+
+logger = logging.getLogger(__name__)
 
 
 class ShapeType(Enum):
@@ -230,6 +234,45 @@ class TumorGenerator:
 
         self._rng = np.random.default_rng()
 
+        # ── Precompute element centroids + KD-Tree (once) ──
+        self._centroid_tree: Optional[cKDTree] = None
+        self._centroid_tissue_labels: Optional[np.ndarray] = None
+        if elements is not None and mesh_nodes is not None:
+            centroids = mesh_nodes[elements].mean(axis=1)  # [N_elem, 3]
+            self._centroid_tree = cKDTree(centroids)
+            self._centroid_tissue_labels = tissue_labels
+            logger.info(
+                f"  Built element centroid KD-Tree: {len(centroids)} elements"
+            )
+
+        # ── Precompute sampling coordinates for all depth tiers ──
+        self._precompute_sampling_coords()
+
+    def _precompute_sampling_coords(self) -> None:
+        """Pre-compute sampling coordinates for all depth tier + region combinations.
+
+        This triggers EDT computation once upfront, then all subsequent calls
+        to get_subcutaneous_coords() are cache hits (O(1)).
+        """
+        if self.atlas is None:
+            return
+
+        logger.info("  Pre-computing subcutaneous sampling coordinates...")
+        # Trigger full-range cache build for each region
+        for region in self.regions:
+            self.atlas.get_subcutaneous_coords(
+                depth_range_mm=tuple(self.depth_range),
+                regions=[region],
+            )
+            # Also pre-compute each depth tier
+            for tier_name, tier_cfg in self.depth_distribution.items():
+                tier_range = tuple(tier_cfg["range"])
+                self.atlas.get_subcutaneous_coords(
+                    depth_range_mm=tier_range,
+                    regions=[region],
+                )
+        logger.info("  Sampling coordinate pre-computation done.")
+
     def generate_sample(
         self,
         num_foci: Optional[int] = None,
@@ -383,21 +426,17 @@ class TumorGenerator:
         bool
             True if placement is valid.
         """
-        if self.mesh_nodes is None or self.tissue_labels is None:
-            return True  # No mesh available, skip validation
+        if self._centroid_tree is None:
+            return True  # No KD-Tree available, skip validation
 
-        # Find elements whose centroids are within 4*radius of center
-        # (tissue_labels is per-element, not per-node)
+        # KD-Tree ball query: O(log N + k) instead of O(N)
         cutoff = 4.0 * radius
-        elements = self.elements  # [N_elements x 4]
-        centroids = self.mesh_nodes[elements].mean(axis=1)  # [N_elements x 3]
-        dists = np.linalg.norm(centroids - center, axis=1)
-        affected_elements = dists < cutoff
+        indices = self._centroid_tree.query_ball_point(center, cutoff)
 
-        if not np.any(affected_elements):
+        if not indices:
             return True
 
-        tissues = self.tissue_labels[affected_elements]
+        tissues = self._centroid_tissue_labels[np.array(indices)]
         unique_tissues = set(np.unique(tissues))
 
         # Soft tissue labels that can be crossed freely
@@ -498,6 +537,8 @@ class TumorGenerator:
     ) -> Tuple[np.ndarray, bool]:
         """Attempt to sample from atlas subcutaneous region.
 
+        Uses pre-cached subcutaneous coordinates for O(1) random sampling.
+
         Parameters
         ----------
         forced_depth : float, optional
@@ -517,23 +558,17 @@ class TumorGenerator:
             else tuple(self.depth_range)
         )
 
-        subq_mask = self.atlas.get_subcutaneous_region(
+        # Use cached coordinates (no EDT recomputation)
+        coords = self.atlas.get_subcutaneous_coords(
             depth_range_mm=depth_range,
             regions=[region],
         )
 
-        if not np.any(subq_mask):
+        if len(coords) == 0:
             return self._sample_from_config(forced_depth=forced_depth), False
 
-        voxel_coords = np.argwhere(subq_mask)
-        idx = self._rng.integers(len(voxel_coords))
-
-        x, y, z = voxel_coords[idx]
-        voxel_size = self.atlas.voxel_size
-
-        return np.array(
-            [x * voxel_size, y * voxel_size, z * voxel_size], dtype=np.float64
-        ), True
+        idx = self._rng.integers(len(coords))
+        return coords[idx].copy(), True
 
     def _sample_from_config(
         self, forced_depth: Optional[float] = None
