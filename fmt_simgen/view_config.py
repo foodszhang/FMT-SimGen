@@ -117,12 +117,15 @@ class TurntableCamera:
             if counts[i] > 0:
                 normals[i] /= counts[i]
 
-        # Flip normals to point outward using world +Z as reference for prone pose.
-        # For prone imaging (dorsal at +Z), outward normals on dorsal surface
-        # should point in +Z direction. If dot(normal, +Z) < 0, flip.
+        # Flip normals to point outward using mesh center direction as reference.
+        # The direction from mesh center to a surface node is outward.
+        # If normal points inward (dot < 0), flip it.
+        mesh_center = nodes[counts > 0].mean(axis=0)
         for i in range(num_nodes):
-            if counts[i] > 0 and normals[i, 2] < 0:
-                normals[i] = -normals[i]
+            if counts[i] > 0:
+                outward_dir = nodes[i] - mesh_center
+                if np.dot(normals[i], outward_dir) < 0:
+                    normals[i] = -normals[i]
 
         # Normalize
         norms = np.linalg.norm(normals, axis=1, keepdims=True)
