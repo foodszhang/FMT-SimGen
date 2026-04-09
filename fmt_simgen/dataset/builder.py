@@ -12,6 +12,7 @@ Each sample produces:
 - tumor_params.json: Tumor parameters for reproducibility
 """
 
+import gc
 import numpy as np
 import json
 import random
@@ -172,7 +173,7 @@ class DatasetBuilder:
         self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
-    def build_samples(self, num_samples: Optional[int] = None) -> List[SampleOutput]:
+    def build_samples(self, num_samples: Optional[int] = None) -> None:
         """Generate tumor samples with measurements.
 
         Parameters
@@ -235,76 +236,179 @@ class DatasetBuilder:
         filter_enabled = self.quality_config.get("enabled", False)
         min_b_max = self.quality_config.get("min_b_max", 0.001)
         min_gt_frac = self.quality_config.get("min_gt_nonzero_frac", 0.001)
+        min_gt_nonzero_count = self.quality_config.get("min_gt_nonzero_count", 0)
         max_retries = self.quality_config.get("max_retries", 5)
 
-        samples: List[SampleOutput] = []
+        # Only accumulate metadata for manifest, not full SampleOutput objects
+        samples_metadata: List[Dict] = []
         rejected_count = 0
+        skipped_count = 0
 
+        # ============ Pre-compute stratified sample plan ============
+        # Assign depth_tier per sample based on depth_distribution weights,
+        # then assign num_foci and depth_mm within each tier.
+        depth_config = self.tumor_config["depth_distribution"]
+        tiers = list(depth_config.keys())
+        weights = [depth_config[t]["weight"] for t in tiers]
+        depth_ranges = {t: depth_config[t]["range"] for t in tiers}
+
+        foci_dist = self.tumor_config["num_foci_distribution"]
+        foci_vals = list(foci_dist.keys())
+        foci_probs = list(foci_dist.values())
+
+        tier_counts = np.random.choice(tiers, size=num_samples, p=weights)
+        samples_plan: List[tuple] = []
         for i in range(num_samples):
-            print(f"  Generating sample {i + 1}/{num_samples}...")
+            tier = tier_counts[i]
+            n_foci = int(np.random.choice(foci_vals, p=foci_probs))
+            lo, hi = depth_ranges[tier]
+            depth_mm = float(np.random.uniform(lo, hi))
+            samples_plan.append((n_foci, depth_mm, tier))
+
+        # Generate until we have exactly num_samples valid saves.
+        # When organ constraint or quality filter rejects parameters, we draw
+        # fresh ones rather than retrying the same (deterministically failing) slot.
+        saved_count = 0
+        plan_idx = 0  # position in samples_plan
+
+        while saved_count < num_samples:
+            # Draw parameters: use plan until exhausted, then draw from same distribution
+            if plan_idx < len(samples_plan):
+                n_foci, depth_mm, depth_tier = samples_plan[plan_idx]
+                plan_idx += 1
+            else:
+                tier = np.random.choice(tiers, p=weights)
+                n_foci = int(np.random.choice(foci_vals, p=foci_probs))
+                lo, hi = depth_ranges[tier]
+                depth_mm = float(np.random.uniform(lo, hi))
+                depth_tier = tier
+
+            print(f"  Generating sample {saved_count + 1}/{num_samples}...")
+
+            last_tumor_sample = None
+            last_gt_nodes = None
+            last_gt_voxels = None
+            last_measurement_b = None
+            last_b_max = 0.0
+            last_gt_nonzero_frac = 0.0
+            last_gt_nonzero_count = 0
+
+            # Track organ_failure separately: if organ fails even once, params are bad
+            organ_failed_all_attempts = True
+            quality_passed = False
 
             for attempt in range(max_retries + 1):
-                tumor_sample = self.tumor_generator.generate_sample()
+                tumor_sample = self.tumor_generator.generate_sample(
+                    num_foci=n_foci,
+                    depth_mm=depth_mm,
+                    depth_tier=depth_tier,
+                )
 
+                # Compute gt_nodes and measurement_b first (small, ~100KB total)
                 gt_nodes = dual_sampler.sample_to_nodes(tumor_sample)
-
-                gt_voxels = dual_sampler.sample_to_voxels(tumor_sample)
-
                 measurement_b = self.fem_solver.forward(gt_nodes)
 
                 b_max = float(np.max(np.abs(measurement_b)))
                 gt_nonzero_frac = float(np.count_nonzero(gt_nodes)) / len(gt_nodes)
+                gt_nonzero_count = int(np.count_nonzero(gt_nodes))
 
-                if not filter_enabled:
+                b_ok = b_max >= min_b_max
+                frac_ok = gt_nonzero_frac >= min_gt_frac
+                count_ok = gt_nonzero_count >= min_gt_nonzero_count
+                organ_ok = getattr(tumor_sample, '_organ_constraint_passed', True)
+
+                quality_this_attempt = b_ok and frac_ok and count_ok
+                organ_failed_all_attempts = organ_failed_all_attempts and not organ_ok
+
+                if (not filter_enabled or quality_this_attempt) and organ_ok:
+                    # Only compute gt_voxels (13MB) after quality check passes
+                    gt_voxels = dual_sampler.sample_to_voxels(tumor_sample)
+                    quality_passed = True
+                    last_tumor_sample = tumor_sample
+                    last_gt_nodes = gt_nodes
+                    last_gt_voxels = gt_voxels
+                    last_measurement_b = measurement_b
+                    last_b_max = b_max
+                    last_gt_nonzero_frac = gt_nonzero_frac
+                    last_gt_nonzero_count = gt_nonzero_count
                     break
-                if b_max >= min_b_max and gt_nonzero_frac >= min_gt_frac:
-                    break
+
+                # Failed: release memory before retry
+                del gt_nodes, measurement_b, tumor_sample
+                gc.collect()
                 if attempt < max_retries:
-                    print(f"    [FILTER] Sample {i} rejected (b_max={b_max:.6f}, "
-                          f"gt_frac={gt_nonzero_frac:.6f}), retrying {attempt + 1}/{max_retries}")
+                    reason = "organ constraint" if not organ_ok else "quality filter"
+                    print(f"    [FILTER] Sample rejected ({reason}), retrying {attempt + 1}/{max_retries}")
                 else:
-                    print(f"    [FILTER] Sample {i} kept after {max_retries} retries "
-                          f"(b_max={b_max:.6f})")
+                    reason = "organ constraint" if not organ_ok else "quality filter"
+                    print(f"    [FILTER] Sample rejected ({reason}), retries exhausted")
 
-            if filter_enabled and b_max < min_b_max:
+            # Gate saving: organ failure = always abandon (don't retry same params)
+            # quality failure with organ pass = abandon params (retry with fresh)
+            organ_ok = getattr(last_tumor_sample, '_organ_constraint_passed', True)
+            if filter_enabled and (organ_failed_all_attempts or not quality_passed):
                 rejected_count += 1
+                skipped_count += 1
+                msg = "organ constraint" if organ_failed_all_attempts else "quality filter"
+                print(f"    [WARNING] Sample failed ({msg}), abandoning and retrying with new parameters")
+                continue
+
+            tumor_params = last_tumor_sample.to_dict()
+            tumor_params["organ_constraint_passed"] = organ_ok
 
             sample = SampleOutput(
-                measurement_b=measurement_b,
-                gt_nodes=gt_nodes,
-                gt_voxels=gt_voxels,
-                tumor_params=tumor_sample.to_dict(),
+                measurement_b=last_measurement_b,
+                gt_nodes=last_gt_nodes,
+                gt_voxels=last_gt_voxels,
+                tumor_params=tumor_params,
             )
-            samples.append(sample)
+            self._save_sample(sample, samples_output, saved_count)
 
-            self._save_sample(sample, samples_output, i)
-
+            # Validate using in-memory sample object (no disk re-read)
             self._validate_sample(sample, self._mesh_data.nodes)
+
+            samples_metadata.append({
+                "id": f"sample_{saved_count:04d}",
+                "num_foci": tumor_params["num_foci"],
+                "depth_tier": tumor_params.get("depth_tier", "unknown"),
+                "depth_mm": tumor_params.get("depth_mm"),
+                "b_max": last_b_max,
+                "b_mean": float(np.mean(np.abs(last_measurement_b))),
+                "gt_max": float(np.max(last_gt_nodes)),
+                "gt_nonzero_count": last_gt_nonzero_count,
+                "gt_nonzero_frac": last_gt_nonzero_frac,
+                "has_gt_voxels": True,
+            })
+
+            saved_count += 1
+
+            del sample, last_measurement_b, last_gt_nodes, last_gt_voxels, last_tumor_sample
+            gc.collect()
 
         print(f"Dataset saved to {experiment_output}")
 
         if rejected_count > 0:
-            print(f"[WARNING] {rejected_count} samples had b_max below threshold")
+            print(f"[WARNING] {rejected_count} samples did not pass quality filter")
+        if skipped_count > 0:
+            print(f"[WARNING] {skipped_count} samples were skipped due to generation failure")
 
         # Generate train/val splits (80/20)
-        self._generate_splits(experiment_output, len(samples))
+        self._generate_splits(experiment_output, [s["id"] for s in samples_metadata])
 
-        # Generate manifest
-        self._generate_manifest(experiment_output, samples)
+        # Generate manifest from metadata only
+        self._generate_manifest(experiment_output, samples_metadata)
 
-        return samples
-
-    def _generate_splits(self, experiment_output: Path, num_samples: int) -> None:
+    def _generate_splits(self, experiment_output: Path, sample_ids: List[str]) -> None:
         """Generate train/val split files.
 
         Parameters
         ----------
         experiment_output : Path
             Path to experiment output directory.
-        num_samples : int
-            Total number of samples.
+        sample_ids : List[str]
+            List of sample IDs that were actually generated.
         """
-        sample_ids = [f"sample_{i:04d}" for i in range(num_samples)]
+        sample_ids = list(sample_ids)
         random.seed(42)
         random.shuffle(sample_ids)
         split_idx = int(len(sample_ids) * 0.8)
@@ -319,40 +423,25 @@ class DatasetBuilder:
             f.write("\n".join(val_ids) + "\n")
         print(f"Splits: {len(train_ids)} train, {len(val_ids)} val")
 
-    def _generate_manifest(self, experiment_output: Path, samples: List[SampleOutput]) -> None:
+    def _generate_manifest(self, experiment_output: Path, samples_metadata: List[Dict]) -> None:
         """Generate dataset manifest JSON.
 
         Parameters
         ----------
         experiment_output : Path
             Path to experiment output directory.
-        samples : List[SampleOutput]
-            List of generated samples.
+        samples_metadata : List[Dict]
+            List of sample metadata dicts.
         """
         manifest = {
             "experiment_name": self.dataset_config.get("experiment_name", "default"),
             "source_type": self.tumor_config.get("source_type", "gaussian"),
-            "num_samples": len(samples),
+            "num_samples": len(samples_metadata),
             "mesh_nodes": int(self._mesh_data.nodes.shape[0]),
             "mesh_surface_nodes": int(len(self._mesh_data.surface_node_indices)),
             "config": self.config,
-            "samples": []
+            "samples": samples_metadata,
         }
-
-        for i, sample in enumerate(samples):
-            tumor_params = sample.tumor_params
-            manifest["samples"].append({
-                "id": f"sample_{i:04d}",
-                "num_foci": tumor_params["num_foci"],
-                "depth_tier": tumor_params.get("depth_tier", "unknown"),
-                "depth_mm": tumor_params.get("depth_mm"),
-                "b_max": float(np.max(np.abs(sample.measurement_b))),
-                "b_mean": float(np.mean(np.abs(sample.measurement_b))),
-                "gt_max": float(np.max(sample.gt_nodes)),
-                "gt_nonzero_count": int(np.count_nonzero(sample.gt_nodes)),
-                "gt_nonzero_frac": float(np.count_nonzero(sample.gt_nodes)) / len(sample.gt_nodes),
-                "has_gt_voxels": True,
-            })
 
         manifest_path = experiment_output / "dataset_manifest.json"
         with open(manifest_path, "w") as f:

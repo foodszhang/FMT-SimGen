@@ -654,7 +654,19 @@ class FEMSolver:
         A_file = filepath.with_suffix(".A.npz")
         if A_file.exists():
             A_data = np.load(A_file)
-            self._forward_matrix = A_data["forward_matrix"]
+            if "forward_matrix" in A_data:
+                self._forward_matrix = A_data["forward_matrix"]
+            elif "indices" in A_data and "indptr" in A_data:
+                # CSR sparse format: reconstruct the forward matrix
+                from scipy.sparse import csr_matrix
+
+                self._forward_matrix = csr_matrix(
+                    (A_data["data"], A_data["indices"], A_data["indptr"]),
+                    shape=tuple(A_data["shape"]),
+                )
+                logger.info(
+                    f"  Forward matrix loaded as CSR: {self._forward_matrix.shape}"
+                )
 
         logger.info(f"System matrix loaded from: {filepath}.*")
         return self
