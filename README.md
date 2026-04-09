@@ -106,6 +106,10 @@ This project references two prior implementations:
 
 FMT-SimGen combines insights from both: analytic tumor definitions from MS-GDUN with whole-body atlas support from P1.
 
+## Training Code
+
+Training, evaluation, and visualization code has been migrated to [DU2Vox](https://github.com/foodszhang/DU2Vox).
+
 ## License
 
 TBD

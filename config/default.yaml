@@ -171,4 +171,5 @@ quality_filter:
   enabled: true
   min_b_max: 0.001           # measurement_b 的最小 max 值
   min_gt_nonzero_frac: 0.001  # gt_nodes 非零节点占比下限
+  min_gt_nonzero_count: 0     # gt_nodes 非零节点数下限（0=不检查）
   max_retries: 5             # 质量不过关时的重试次数

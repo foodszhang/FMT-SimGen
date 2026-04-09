@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-Create stratified train/val split based on foci counts.
+Create stratified train/val split based on foci counts and depth tiers.
 
-Split rules:
-- Total: 200 samples, 80% train / 20% val
-- 1-foci: 60 total → train 48, val 12
-- 2-foci: 70 total → train 56, val 14
-- 3-foci: 70 total → train 56, val 14
+Split rules (1000 samples):
+- Total: 1000 samples, 80% train / 20% val
+- 1-foci: 300 total → train 240, val 60
+- 2-foci: 350 total → train 280, val 70
+- 3-foci: 350 total → train 280, val 70
 
 Outputs:
-- train/splits/train.txt (160 lines, sample_XXXX only)
-- train/splits/val.txt (40 lines, sample_XXXX only)
-- train/splits/train_with_foci.txt (tab-separated: sample_XXXX\tnum_foci)
-- train/splits/val_with_foci.txt (tab-separated: sample_XXXX\tnum_foci)
-- output/dataset_manifest.json (full metadata)
+- train/splits/train.txt (800 lines, sample_XXXX only)
+- train/splits/val.txt (200 lines, sample_XXXX only)
+- train/splits/train_with_foci.txt (tab-separated: sample_XXXX\tnum_foci\tdepth_tier)
+- train/splits/val_with_foci.txt (tab-separated: sample_XXXX\tnum_foci\tdepth_tier)
+- output/dataset_manifest.json (full metadata with cross-tabulation)
 
 Usage:
     python scripts/04_stratified_split.py
+    python scripts/04_stratified_split.py --n_total 1000
 """
 
 import sys
@@ -59,8 +60,8 @@ def main():
             "foci_details": params.get("foci", []),
         }
 
-    if len(samples) != 200:
-        print(f"WARNING: Found {len(samples)} samples, expected 200")
+    if len(samples) != 1000:
+        print(f"WARNING: Found {len(samples)} samples, expected 1000")
 
     # Group by foci count
     by_foci = {1: [], 2: [], 3: []}
@@ -76,9 +77,9 @@ def main():
     for n in by_foci:
         rng.shuffle(by_foci[n])
 
-    # Stratified split
-    train_counts = {1: 48, 2: 56, 3: 56}
-    val_counts = {1: 12, 2: 14, 3: 14}
+    # Stratified split for 1000 samples: 80/20
+    train_counts = {1: 240, 2: 280, 3: 280}
+    val_counts = {1: 60, 2: 70, 3: 70}
 
     train_samples = []
     val_samples = []
@@ -128,13 +129,13 @@ def main():
         "total_samples": len(samples),
         "seed": 42,
         "foci_distribution": {
-            "1": 60,
-            "2": 70,
-            "3": 70,
+            "1": 300,
+            "2": 350,
+            "3": 350,
         },
         "split": {
-            "train": 160,
-            "val": 40,
+            "train": 800,
+            "val": 200,
             "train_by_foci": train_by_foci,
             "val_by_foci": val_by_foci,
         },

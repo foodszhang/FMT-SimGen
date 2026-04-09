@@ -91,9 +91,9 @@ def main():
         n = config.get("dataset", {}).get("num_samples", 50)
         print(f"Generating {n} samples (from config)...")
 
-    samples = builder.build_samples(num_samples=args.num_samples)
+    builder.build_samples(num_samples=args.num_samples)
 
-    print(f"\nDataset generation complete! {len(samples)} samples saved.")
+    print(f"\nDataset generation complete! See data/{experiment_name}/ for output.")
 
 
 if __name__ == "__main__":
