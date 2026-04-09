@@ -14,6 +14,7 @@ from fmt_simgen.physics.optical_params import OpticalParameterManager
 from fmt_simgen.tumor.tumor_generator import TumorGenerator, TumorSample, AnalyticFocus
 from fmt_simgen.sampling.dual_sampler import DualSampler
 from fmt_simgen.dataset.builder import DatasetBuilder
+from fmt_simgen.view_config import TurntableCamera
 
 __all__ = [
     "DigimouseAtlas",
@@ -25,4 +26,5 @@ __all__ = [
     "AnalyticFocus",
     "DualSampler",
     "DatasetBuilder",
+    "TurntableCamera",
 ]

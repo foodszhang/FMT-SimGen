@@ -173,3 +173,61 @@ quality_filter:
   min_gt_nonzero_frac: 0.001  # gt_nodes 非零节点占比下限
   min_gt_nonzero_count: 0     # gt_nodes 非零节点数下限（0=不检查）
   max_retries: 5             # 质量不过关时的重试次数
+
+# === MCX 仿真配置 ===
+mcx:
+  # 输出文件路径
+  volume_path: "output/shared/mcx_volume_trunk.bin"
+  material_path: "output/shared/mcx_material.yaml"
+
+  # 躯干裁剪参数（Y 方向，对应 anterior→posterior）
+  # Y ∈ [30mm, 70mm] at 0.1mm/voxel → voxel index [300, 700]
+  trunk_crop:
+    y_start: 300
+    y_end: 700
+
+  # 下采样因子
+  downsample_factor: 2
+
+  # 体素大小（mm）- 原始 0.1mm，2× 下采样后 0.2mm
+  voxel_size_mm: 0.2
+
+  # 裁剪起点在原始 atlas 中的物理偏移（mm）
+  # Y offset = y_start * voxel_size = 300 * 0.1 = 30mm
+  trunk_offset_mm: [0, 30, 0]
+
+  # MCX Dim（Z, Y, X 顺序）- 由脚本自动计算
+  # 原始裁剪后 (X=380, Y=400, Z=208) → 2× 下采样后 (X=190, Y=200, Z=104)
+  # MCX Dim = [104, 200, 190]
+  volume_shape: [104, 200, 190]
+
+  # 组织类别数量
+  num_tissues: 10  # labels 0-9
+
+# === TurntableCamera 视图配置 ===
+view_config:
+  # 旋转角度列表 (度)
+  angles: [-90, -60, -30, 0, 30, 60, 90]
+
+  # 体位: prone (俯卧, 背部肿瘤) 或 supine (仰卧, 腹部肿瘤)
+  pose: prone
+
+  # 相机到转台距离 (mm)
+  camera_distance_mm: 200
+
+  # 探测器分辨率 [宽, 高] (像素)
+  detector_resolution: [256, 256]
+
+  # 投影类型 (目前只支持 orthographic)
+  projection_type: orthographic
+
+  # 是否启用平台遮挡
+  platform_occlusion: true
+
+  # 视野范围 (mm, 覆盖鼠体最大截面)
+  fov_mm: 50
+
+  # 平台遮挡 Z 中心 (mm, 约等于鼠体高度一半)
+  # 鼠体 Z 范围 [1.6, 20]，平台在腹侧 (prone) 或背侧 (supine)
+  # 对于 prone，平台在低 Z 区，occlude Z < z_center
+  platform_z_center: 4.0
