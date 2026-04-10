@@ -6,6 +6,7 @@ from FMT-SimGen tumor_params.json.
 """
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Union
@@ -130,7 +131,7 @@ def generate_mcx_config(
     # Save JSON
     json_path = output_dir / f"{sample_id}.json"
     with open(json_path, "w") as f:
-        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+        json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
     logger.debug(f"Saved MCX config: {json_path}")
 
