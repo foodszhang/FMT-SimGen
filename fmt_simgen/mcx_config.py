@@ -84,8 +84,26 @@ def generate_mcx_config(
     nx, ny, nz = pattern.shape  # (nx, ny, nz) from tumor_params_to_mcx_pattern
     x0, y0, z0 = origin
 
-    # Determine volume file path (relative to output_dir)
-    volume_file = mcx_config.get("volume_path", "output/shared/mcx_volume_trunk.bin")
+    # Determine volume file path.
+    # VolumeFile in MCX JSON is relative to the directory where MCX runs (sample dir).
+    # Compute the relative path from output_dir (sample directory) to the volume file
+    # by going up from output_dir to the project root, then down to the volume.
+    project_root = Path(__file__).parent.parent
+    volume_file_rel = mcx_config.get("volume_path", "output/shared/mcx_volume_trunk.bin")
+    volume_file_abs = (project_root / volume_file_rel).resolve()
+
+    # Compute relative path from sample output_dir to project_root
+    try:
+        rel_to_project = Path(volume_file_abs).relative_to(project_root.resolve())
+        # Compute number of levels to go up from output_dir to project_root
+        out_parts = output_dir.resolve().parts
+        proj_parts = project_root.resolve().parts
+        common = len([a for a, b in zip(out_parts, proj_parts) if a == b])
+        levels_up = len(out_parts) - common
+        volume_file = Path("/".join([".."] * levels_up)) / rel_to_project
+    except ValueError:
+        # Fall back to absolute path
+        volume_file = volume_file_abs
 
     # Session ID: use sample_id without any prefix for MCX output naming
     session_id = sample_id
