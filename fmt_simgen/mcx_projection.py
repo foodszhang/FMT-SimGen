@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import jdata as jd
 import numpy as np
+from numba import njit, prange
 
 from fmt_simgen.view_config import TurntableCamera
 
@@ -72,7 +73,8 @@ def project_volume_reference(
         (projection [H×W], depth_map [H×W])
     """
     width_pixels, height_pixels = detector_resolution
-    width_phys, height_phys = fov_mm, fov_mm
+    width_phys, height_phys = float(fov_mm), float(fov_mm)
+    camera_distance = float(camera_distance)
 
     projection = np.zeros((height_pixels, width_pixels), dtype=np.float32)
     depth_map = np.full((height_pixels, width_pixels), np.inf, dtype=np.float32)
@@ -82,68 +84,92 @@ def project_volume_reference(
 
     nx, ny, nz = volume_3d.shape
 
-    # Collect non-zero voxels with their world coordinates
+    # Collect non-zero voxels
     nonzero_mask = volume_3d > 0
     nonzero_indices = np.argwhere(nonzero_mask)  # [N, 3] in (ix, iy, iz)
     if len(nonzero_indices) == 0:
         return projection, depth_map
 
-    # Voxel center in world coordinates, centered at origin
-    # reference: x = i - nx/2 + 0.5
-    points = np.zeros((len(nonzero_indices), 3), dtype=np.float32)
-    for idx, (i, j, k) in enumerate(nonzero_indices):
-        points[idx, 0] = i - nx / 2 + 0.5
-        points[idx, 1] = j - ny / 2 + 0.5
-        points[idx, 2] = k - nz / 2 + 0.5
+    N = len(nonzero_indices)
+    points = np.zeros((N, 3), dtype=np.float32)
+    points[:, 0] = nonzero_indices[:, 0] - nx / 2 + 0.5
+    points[:, 1] = nonzero_indices[:, 1] - ny / 2 + 0.5
+    points[:, 2] = nonzero_indices[:, 2] - nz / 2 + 0.5
 
-    values = volume_3d[nonzero_indices[:, 0], nonzero_indices[:, 1], nonzero_indices[:, 2]]
+    values = volume_3d[
+        nonzero_indices[:, 0], nonzero_indices[:, 1], nonzero_indices[:, 2]
+    ].astype(np.float32)
 
-    # Rotate volume around Y axis by angle_deg
+    # Rotate around Y axis
     if angle_deg != 0:
         R = rotation_matrix_y(angle_deg)
-        # points = R @ points.T .T
         points = points @ R.T
 
-    # Project: for orthographic, all rays parallel to -Z
-    # Camera at (0, 0, camera_distance), looking toward origin
-    # Transform points to camera frame: subtract camera pos, rotate by R^-1 = R^T
-    # Since R is orthogonal, R^-1 = R^T
-    # camera_coords = R @ (point - [0,0,D]) = R @ point + [0,0,-D]
-    # For orthographic projection, we only care about the rotated (x, z) in camera frame
-    if angle_deg != 0:
-        R = rotation_matrix_y(angle_deg)
-        cam_x = points[:, 0]
-        cam_y = points[:, 1]  # world Y = detector vertical
-        cam_z = points[:, 2]  # world Z → depth
-    else:
-        cam_x = points[:, 0]
-        cam_y = points[:, 1]
-        cam_z = points[:, 2]
+    # Compute detector-plane coordinates and depth
+    cam_x = points[:, 0]
+    cam_y = points[:, 1]  # world Y = detector vertical
+    cam_z = points[:, 2]  # world Z = depth axis
+    depths = camera_distance - cam_z  # positive = in front
 
-    # depth = camera_distance - cam_z (positive = in front of detector)
-    # camera at (0, 0, camera_distance), looking toward -Z
-    # point with cam_z < D is in front of camera (along -Z direction)
-    depths = camera_distance - cam_z
+    # Call numba-accelerated inner loop
+    _project_points_to_detector(
+        projection,
+        depth_map,
+        cam_x,
+        cam_y,
+        depths,
+        values,
+        width_pixels,
+        height_pixels,
+        width_phys,
+        height_phys,
+        pixel_to_phys_x,
+        pixel_to_phys_y,
+    )
 
-    for idx in range(len(points)):
+    return projection, depth_map
+
+
+@njit(cache=True, fastmath=True)
+def _project_points_to_detector(
+    projection: np.ndarray,
+    depth_map: np.ndarray,
+    cam_x: np.ndarray,
+    cam_y: np.ndarray,
+    depths: np.ndarray,
+    values: np.ndarray,
+    width_pixels: int,
+    height_pixels: int,
+    width_phys: float,
+    height_phys: float,
+    pixel_to_phys_x: float,
+    pixel_to_phys_y: float,
+) -> None:
+    """Numba-accelerated point-to-detector projection loop.
+
+    For each non-zero voxel, maps it to the detector pixel and keeps
+    the shallowest (nearest) point.
+    """
+    half_w = width_phys / 2
+    half_h = height_phys / 2
+
+    for idx in range(len(cam_x)):
         px = cam_x[idx]
         py = cam_y[idx]
         depth_val = depths[idx]
 
-        if abs(px) > width_phys / 2 or abs(py) > height_phys / 2:
+        if abs(px) > half_w or abs(py) > half_h:
             continue
         if depth_val < 0:
             continue
 
-        pixel_u = int((px + width_phys / 2) / pixel_to_phys_x)
-        pixel_v = int((py + height_phys / 2) / pixel_to_phys_y)
+        pixel_u = int((px + half_w) / pixel_to_phys_x)
+        pixel_v = int((py + half_h) / pixel_to_phys_y)
 
         if 0 <= pixel_u < width_pixels and 0 <= pixel_v < height_pixels:
             if depth_val < depth_map[pixel_v, pixel_u]:
                 depth_map[pixel_v, pixel_u] = depth_val
                 projection[pixel_v, pixel_u] = values[idx]
-
-    return projection, depth_map
 
 
 def load_jnii_volume(jnii_path: Path) -> np.ndarray:
