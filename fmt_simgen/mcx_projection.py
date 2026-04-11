@@ -172,6 +172,114 @@ def _project_points_to_detector(
                 projection[pixel_v, pixel_u] = values[idx]
 
 
+def project_volume_reference_numpy(
+    volume_3d: np.ndarray,
+    angle_deg: float,
+    camera_distance: float,
+    fov_mm: float,
+    detector_resolution: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pure-numpy orthographic projection (no numba required).
+
+    Places volume center at origin, camera at [0,0,D] looking toward origin.
+    Keeps nearest (shallowest) non-zero voxel per detector pixel.
+
+    Parameters
+    ----------
+    volume_3d : np.ndarray
+        3D fluence volume [X×Y×Z].
+    angle_deg : float
+        Rotation angle in degrees.
+    camera_distance : float
+        Camera z-position in mm.
+    fov_mm : float
+        Field of view in mm (square detector).
+    detector_resolution : tuple
+        (width, height) in pixels.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        (projection [H×W], depth_map [H×W])
+    """
+    width_pixels, height_pixels = detector_resolution
+    width_phys = height_phys = float(fov_mm)
+    camera_distance = float(camera_distance)
+
+    projection = np.zeros((height_pixels, width_pixels), dtype=np.float32)
+    depth_map = np.full((height_pixels, width_pixels), np.inf, dtype=np.float32)
+
+    pixel_to_phys_x = width_phys / width_pixels
+    pixel_to_phys_y = height_phys / height_pixels
+
+    nx, ny, nz = volume_3d.shape
+
+    # 1. Collect non-zero voxels
+    nonzero_indices = np.argwhere(volume_3d > 0)  # [N, 3]
+    if len(nonzero_indices) == 0:
+        return projection, depth_map
+
+    N = len(nonzero_indices)
+
+    # 2. Voxel centers centered at origin
+    points = nonzero_indices.astype(np.float32) - np.array(
+        [nx / 2, ny / 2, nz / 2], dtype=np.float32
+    ) + 0.5
+
+    # 3. Fluence values
+    values = volume_3d[
+        nonzero_indices[:, 0], nonzero_indices[:, 1], nonzero_indices[:, 2]
+    ].astype(np.float32)
+
+    # 4. Rotate around Y axis
+    if angle_deg != 0:
+        R = rotation_matrix_y(angle_deg)
+        points = points @ R.T
+
+    # 5. Orthographic projection: cam_x, cam_y = rotated x,y; depth = D - z_rot
+    cam_x = points[:, 0]
+    cam_y = points[:, 1]  # world Y = detector vertical
+    cam_z = points[:, 2]
+    depths = camera_distance - cam_z  # positive = in front of detector
+
+    # 6. Pixel coordinates (fully vectorized)
+    pixel_u = ((cam_x + width_phys / 2) / pixel_to_phys_x).astype(np.int32)
+    pixel_v = ((cam_y + height_phys / 2) / pixel_to_phys_y).astype(np.int32)
+
+    # 7. Validity mask
+    valid = (
+        (pixel_u >= 0) & (pixel_u < width_pixels) &
+        (pixel_v >= 0) & (pixel_v < height_pixels) &
+        (depths > 0)
+    )
+    pixel_u = pixel_u[valid]
+    pixel_v = pixel_v[valid]
+    depths_v = depths[valid]
+    values_v = values[valid]
+
+    if len(depths_v) == 0:
+        return projection, depth_map
+
+    # 8. Sort by depth (shallowest first)
+    sort_idx = np.argsort(depths_v)
+    pixel_u = pixel_u[sort_idx]
+    pixel_v = pixel_v[sort_idx]
+    values_sorted = values_v[sort_idx]
+    depths_sorted = depths_v[sort_idx]
+
+    # 9. ravel_multi_index for flat unique pixel selection
+    flat_idx = np.ravel_multi_index(
+        (pixel_v, pixel_u), (height_pixels, width_pixels)
+    )
+    _, unique_pos = np.unique(flat_idx, return_index=True)
+
+    # 10. Assign to output arrays
+    flat_unique = flat_idx[unique_pos]
+    projection.flat[flat_unique] = values_sorted[unique_pos]
+    depth_map.flat[flat_unique] = depths_sorted[unique_pos]
+
+    return projection, depth_map
+
 def load_jnii_volume(jnii_path: Path) -> np.ndarray:
     """Load a .jnii MCX fluence file and return volume in XYZ order.
 
