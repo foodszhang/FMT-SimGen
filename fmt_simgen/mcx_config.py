@@ -114,7 +114,7 @@ def generate_mcx_config(
     config_dict = {
         "Domain": {
             "VolumeFile": str(volume_file),
-            "Dim": list(mcx_config["volume_shape"]),  # [nz, ny, nx] ZYX order
+            "Dim": list(mcx_config["volume_shape"]),  # [Z, Y, X] = [104, 200, 190]
             "OriginType": 1,
             "LengthUnit": float(mcx_config["voxel_size_mm"]),
             "Media": media_list,

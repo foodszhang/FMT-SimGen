@@ -16,6 +16,7 @@ dependencies = [
   "pyvista[jupyter]>=0.47.1",
   "trame>=3.12.0",
   "imageio>=2.37.3",
+  "numba>=0.65.0",
 ]
 
 [tool.uv.sources]

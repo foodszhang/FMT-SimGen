@@ -276,22 +276,21 @@ class TurntableCamera:
     ) -> np.ndarray:
         """Project a 3D fluence volume to a 2D detector image.
 
-        For each pixel in the detector, casts a ray through the volume
-        along the view direction and accumulates the first encountered
-        non-zero fluence value (nearest surface).
+        Uses orthographic projection matching the reference implementation:
+        all rays are parallel to the view direction. Each detector pixel
+        accumulates the nearest (shallowest) non-zero fluence voxel along
+        its ray path.
 
         Parameters
         ----------
         volume_3d : np.ndarray
-            3D fluence volume [X×Y×Z]. Shape depends on cropping and
-            downsampling from atlas.
+            3D fluence volume [X×Y×Z].
         angle_deg : float
             Rotation angle in degrees.
         voxel_size_mm : float
-            Voxel size in mm (default 0.2 from MCX config).
+            Voxel size in mm (default 0.2).
         origin : Optional[np.ndarray]
-            Physical origin of volume in mm [3]. If None, assumes
-            volume starts at (0, 0, 0).
+            Physical origin of volume in mm [3]. If None, (0, 0, 0).
 
         Returns
         -------
@@ -300,64 +299,79 @@ class TurntableCamera:
         """
         proj_h, proj_w = self.detector_resolution[1], self.detector_resolution[0]
         projection = np.zeros((proj_h, proj_w), dtype=np.float32)
+        depth_map = np.full((proj_h, proj_w), np.inf, dtype=np.float32)
 
         if origin is None:
             origin = np.array([0.0, 0.0, 0.0])
+        origin = np.asarray(origin, dtype=np.float64)
+        voxel_size = float(voxel_size_mm)
 
-        vol_shape = np.array(volume_3d.shape)
+        # Build rotation matrix R that rotates points by angle_deg around Y axis.
+        # R is applied to (point - camera_pos) so that after rotation,
+        # the rotated z-component equals the world coordinate along view_dir.
+        angle_rad = np.deg2rad(angle_deg)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        R = np.array([
+            [cos_a, 0, sin_a],
+            [0, 1, 0],
+            [-sin_a, 0, cos_a],
+        ], dtype=np.float32)
 
-        # Compute detector pixel centers in world coordinates
-        det_h, det_w = proj_h, proj_w
-        x_range = np.arange(det_w) - det_w / 2 + 0.5
-        y_range = np.arange(det_h) - det_h / 2 + 0.5
+        camera_distance = float(self.camera_distance_mm)
+        camera_pos = -R[:, 2] * camera_distance  # camera at -Z_cam * D
 
-        view_dir = self.get_view_direction(angle_deg)
+        # Collect non-zero voxels for efficiency
+        nonzero_mask = volume_3d > 0
+        nonzero_indices = np.argwhere(nonzero_mask)  # [N, 3] in (ix, iy, iz)
+        if len(nonzero_indices) == 0:
+            return projection
 
-        # Camera basis vectors
-        if abs(view_dir[2]) < 0.999:
-            u = np.cross(view_dir, np.array([0.0, 1.0, 0.0]))
-        else:
-            u = np.cross(view_dir, np.array([1.0, 0.0, 0.0]))
-        u = u / np.linalg.norm(u)
-        v = np.array([0.0, 0.0, 1.0])
+        # World coordinates of voxel centers: origin + (idx + 0.5) * voxel_size
+        voxels_f = nonzero_indices.astype(np.float32) + 0.5
+        world_coords = voxels_f * voxel_size + origin  # [N, 3] in mm
 
-        # Position of camera in world coords
-        camera_pos = -view_dir * self.camera_distance_mm
+        # Rotate into camera frame: camera_coords = R @ (world - camera_pos)
+        # For R defined as above, camera_coords[:, 2] is the depth
+        # (signed distance from detector plane along view direction).
+        camera_coords = (world_coords - camera_pos) @ R.T
 
-        # March through detector pixels
-        for i, dy in enumerate(y_range):
-            for j, dx in enumerate(x_range):
-                # Pixel center in world coords
-                pixel_world = camera_pos + dx * self.pixel_size_mm * u + dy * self.pixel_size_mm * v
+        # depth = camera z - camera_distance (positive = in front of detector plane)
+        depth_vals = camera_coords[:, 2] - camera_distance
 
-                # Ray direction (from camera through pixel)
-                ray_dir = pixel_world - camera_pos
-                ray_dir = ray_dir / np.linalg.norm(ray_dir)
+        # World coords in camera frame (for θ=0):
+        #   cam[:, 0] = world X (detector horizontal)
+        #   cam[:, 1] = world Y (detector vertical, along body)
+        #   cam[:, 2] = world Z (depth along view direction)
+        # Use world X for detector horizontal, world Y for detector vertical
+        px_world = camera_coords[:, 0]  # world X
+        py_world = camera_coords[:, 1]  # world Y → detector vertical
 
-                # Ray-box intersection to find entry/exit
-                t_min, t_max = self._ray_aabb_intersect(
-                    pixel_world, ray_dir, origin, origin + vol_shape * voxel_size_mm
-                )
+        pixel_to_phys_x = self.fov_mm / proj_w
+        pixel_to_phys_y = self.fov_mm / proj_h
 
-                if t_min is None or t_max < 0:
-                    continue
+        for idx in range(len(nonzero_indices)):
+            px = px_world[idx]
+            py = py_world[idx]
+            depth_val = depth_vals[idx]
 
-                # March along ray in volume
-                t = max(t_min, 0)
-                step = voxel_size_mm * 0.5  # Sub-voxel stepping
+            # FOV check: detector covers world coords within fov_mm centered at 0
+            if abs(px) > self.fov_mm / 2 or abs(py) > self.fov_mm / 2:
+                continue
 
-                while t < t_max:
-                    world_pt = pixel_world + t * ray_dir
-                    voxel_idx = ((world_pt - origin) / voxel_size_mm).astype(np.int32)
+            # Convert to pixel indices (top-left origin)
+            pixel_u = int((px + self.fov_mm / 2) / pixel_to_phys_x)
+            pixel_v = int((py + self.fov_mm / 2) / pixel_to_phys_y)
 
-                    if (0 <= voxel_idx[0] < volume_3d.shape[0] and
-                        0 <= voxel_idx[1] < volume_3d.shape[1] and
-                        0 <= voxel_idx[2] < volume_3d.shape[2]):
-                        fluence = volume_3d[voxel_idx[0], voxel_idx[1], voxel_idx[2]]
-                        if fluence > 0:
-                            projection[i, j] = fluence
-                            break
-                    t += step
+            if 0 <= pixel_u < proj_w and 0 <= pixel_v < proj_h:
+                # Keep nearest (shallowest = smallest positive depth)
+                if depth_val < depth_map[pixel_v, pixel_u]:
+                    depth_map[pixel_v, pixel_u] = depth_val
+                    projection[pixel_v, pixel_u] = volume_3d[
+                        nonzero_indices[idx, 0],
+                        nonzero_indices[idx, 1],
+                        nonzero_indices[idx, 2],
+                    ]
 
         return projection
 
