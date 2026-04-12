@@ -64,8 +64,6 @@ def load_view_config() -> dict:
 def process_single_sample(
     sample_dir: Path,
     camera: TurntableCamera,
-    trunk_offset_mm: np.ndarray,
-    voxel_size_mm: float,
     skip_existing: bool,
 ) -> tuple[str, bool, str]:
     """Process a single sample (for parallel execution).
@@ -80,8 +78,6 @@ def process_single_sample(
         proj_path = project_sample(
             sample_dir,
             camera,
-            trunk_offset_mm,
-            voxel_size_mm,
             skip_existing=skip_existing,
         )
         return sample_id, True, str(proj_path)
@@ -186,9 +182,6 @@ def main() -> None:
 
     # Load configs
     shared_cfg = load_shared_config()
-    mcx_cfg = shared_cfg.get("mcx", {})
-    trunk_offset_mm = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
-    voxel_size_mm = float(mcx_cfg.get("voxel_size_mm", 0.2))
 
     view_cfg = load_view_config()
     camera = TurntableCamera(view_cfg)
@@ -229,7 +222,7 @@ def main() -> None:
         # Sequential
         for sample_dir in sample_dirs:
             r = process_single_sample(
-                sample_dir, camera, trunk_offset_mm, voxel_size_mm, skip_existing
+                sample_dir, camera, skip_existing
             )
             results.append(r)
             status = "OK" if r[1] else "FAIL"
@@ -242,8 +235,6 @@ def main() -> None:
                 process_single_sample,
                 sample_dir,
                 camera,
-                trunk_offset_mm,
-                voxel_size_mm,
                 skip_existing,
             )
             futures[fut] = sample_dir.name
