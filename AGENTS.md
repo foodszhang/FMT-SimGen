@@ -34,7 +34,7 @@ pip install -r requirements.txt
 检查所有 Python 文件的语法（项目根目录执行）:
 
 ```bash
-for f in $(find . -name "*.py" -type f); do python3 -m py_compile "$f" && echo "$f: OK"; done
+for f in $(find . -name "*.py" -type f); do uv run python -m py_compile "$f" && echo "$f: OK"; done
 ```
 
 ### 2.3 导入验证
@@ -43,13 +43,13 @@ for f in $(find . -name "*.py" -type f); do python3 -m py_compile "$f" && echo "
 
 ```bash
 cd /home/foods/pro/FMT-SimGen
-/home/foods/miniforge3/bin/python3 -c "
+uv run python -c "
 import sys
 sys.path.insert(0, '.')
 from fmt_simgen import (
     DigimouseAtlas, MeshGenerator, FEMSolver,
     OpticalParameterManager, TumorGenerator, TumorSample,
-    AnalyticFocus, DualSampler, DatasetBuilder
+    AnalyticFocus, DualSampler, DatasetBuilder, TurntableCamera
 )
 print('All imports successful!')
 "
@@ -57,25 +57,39 @@ print('All imports successful!')
 
 ### 2.4 脚本执行
 
+使用 `uv run python`，**不要**用系统 python 或 miniforge3 python：
+
 ```bash
 # Step 0a: 加载并分析 Digimouse atlas
-/home/foods/miniforge3/bin/python3 scripts/run_step0a_atlas.py
+uv run python scripts/run_step0a_atlas.py
 
-# Step 0: 生成网格和系统矩阵
-/home/foods/miniforge3/bin/python3 scripts/01_generate_mesh.py
+# Step 0b-0e: 生成共享资产
+uv run python scripts/step0b_generate_mesh.py
+uv run python scripts/step0c_fem_matrix.py
+uv run python scripts/step0d_voxel_grid.py
+uv run python scripts/step0e_v2_full_graph_laplacian.py
 
-# Step 1-4: 生成数据集
-/home/foods/miniforge3/bin/python3 scripts/02_generate_dataset.py
+# Step 0f: MCX 体积资源
+uv run python scripts/step0f_mcx_volume.py
+uv run python scripts/step0g_view_config.py
 
-# Step 3: 验证数据集
-/home/foods/miniforge3/bin/python3 scripts/03_verify_dataset.py
+# Step 1-4: DE 通道数据集生成
+uv run python scripts/02_generate_dataset.py -n 50
+
+# Step 2m-4m: MCX 通道（独立运行）
+uv run python scripts/step2m_generate_mcx_sources.py
+uv run python scripts/step3m_mcx_simulate.py --samples_dir data/gaussian_1000/samples
+uv run python scripts/step4m_mcx_projection.py --samples_dir data/gaussian_1000/samples
+
+# 双通道（推荐）
+uv run python scripts/run_all.py -n 50 --enable_mcx
 ```
 
 ### 2.5 运行单个脚本（调试用）
 
 ```bash
 cd /home/foods/pro/FMT-SimGen
-/home/foods/miniforge3/bin/python3 -c "
+uv run python -c "
 import sys
 sys.path.insert(0, '.')
 # 在此添加调试代码
@@ -239,7 +253,7 @@ Z: Inferior (-10mm at voxel 0) → Superior (+11mm at voxel 207)
 ```
 FMT-SimGen/
 ├── config/
-│   └── default.yaml              # 全局配置
+│   └── default.yaml              # 全局配置（含 MCX/DE 所有参数）
 ├── fmt_simgen/
 │   ├── __init__.py               # 包导出
 │   ├── atlas/
@@ -248,21 +262,35 @@ FMT-SimGen/
 │   │   └── mesh_generator.py     # 四面体网格生成
 │   ├── physics/
 │   │   ├── optical_params.py     # 光学参数管理
-│   │   └── fem_solver.py          # DE FEM 求解器
+│   │   └── fem_solver.py         # DE FEM 求解器
 │   ├── tumor/
 │   │   └── tumor_generator.py    # 解析肿瘤生成
 │   ├── sampling/
 │   │   └── dual_sampler.py        # 双载体 GT 采样
 │   ├── dataset/
-│   │   └── builder.py             # Pipeline 编排
-│   └── utils/
-│       └── io.py                  # I/O 工具
+│   │   └── builder.py            # DE Pipeline 编排
+│   ├── mcx_volume.py             # MCX: atlas → trunk volume
+│   ├── mcx_source.py             # MCX: Pattern3D  source 定义
+│   ├── mcx_config.py             # MCX: JSON 配置生成
+│   ├── mcx_runner.py             # MCX: CLI 调用（mcx/mcxcl）
+│   ├── mcx_projection.py         # MCX: fluence → 7 角度投影
+│   └── view_config.py            # TurntableCamera 相机模型
 ├── scripts/
-│   ├── 01_generate_mesh.py        # 网格 + 系统矩阵
-│   ├── 02_generate_dataset.py     # 数据集生成
-│   ├── 03_verify_dataset.py       # 数据验证
-│   └── run_step0a_atlas.py        # Atlas 分析
-└── output/                        # 生成的数据（不提交到 git）
+│   ├── 01_generate_mesh.py       # 网格 + 系统矩阵
+│   ├── 02_generate_dataset.py    # DE 通道样本生成
+│   ├── 03_verify_dataset.py      # 数据验证
+│   ├── run_step0a_atlas.py       # Atlas 分析
+│   ├── step0f_mcx_volume.py      # MCX trunk volume 资源
+│   ├── step0g_view_config.py     # MCX 相机模型资源
+│   ├── step2m_generate_mcx_sources.py  # MCX 源配置
+│   ├── step3m_mcx_simulate.py    # MCX GPU 仿真
+│   ├── step4m_mcx_projection.py  # MCX 投影生成
+│   ├── run_all.py                # DE+MCX 双通道入口
+│   └── run_mcx_pipeline.py      # MCX 通道独立入口
+└── output/shared/                # 共享资源（.gitignore）
+    ├── mcx_volume_trunk.bin      # MCX trunk volume
+    ├── mcx_material.yaml         # MCX 材料参数
+    └── view_config.json          # TurntableCamera 配置
 ```
 
 ---
@@ -283,16 +311,20 @@ FMT-SimGen/
 
 ## 6. 注意事项
 
-### 6.1 Python 版本
+### 6.1 Python 环境
 
-项目使用 **Python 3.12**（通过 miniforge 管理）。
-运行脚本时使用:
+使用 `uv run python` 或激活 `.venv`：
 
 ```bash
-/home/foods/miniforge3/bin/python3 scripts/xxx.py
+# 推荐
+uv run python scripts/xxx.py
+
+# 或激活 venv
+source .venv/bin/activate
+python scripts/xxx.py
 ```
 
-而非系统 python3。
+**不要**使用系统 python 或 miniforge3 python。
 
 ### 6.2 浮点数除法注意
 
@@ -311,7 +343,15 @@ Digimouse volume 存储为 `[X, Y, Z]`，其中:
 - Y = Anterior-Posterior (992 voxels, 0=Anterior)
 - Z = Inferior-Superior (208 voxels, 0=Inferior)
 
-### 6.4 镜像数据位置
+### 6.4 MCX JNII 坐标系统
+
+JNII 格式存储为 ZYX 顺序 `(104, 200, 190)`。加载后需 transpose:
+```python
+fluence_xyz = nifti.transpose(2, 1, 0)  # → (190, 200, 104) = [X, Y, Z]
+```
+MCX trunk volume 物理原点对应躯干偏移 `trunk_offset_mm = [0, 30, 0]`。
+
+### 6.5 镜像数据位置
 
 Atlas 文件位于:
 `/home/foods/pro/mcx_simulation/ct_data/atlas_380x992x208.hdr`

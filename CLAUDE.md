@@ -4,82 +4,114 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FMT-SimGen generates synthetic Fluorescence Molecular Tomography (FMT) datasets for training reconstruction algorithms. It produces surface measurements (b), ground truth at FEM nodes (gt_nodes), and ground truth at voxels (gt_voxels) from analytic tumor definitions (Gaussian spheres/ellipsoids).
+FMT-SimGen generates synthetic Fluorescence Molecular Tomography (FMT) datasets with **dual-channel** output:
+
+- **DE channel**: Surface fluence measurements (b), ground truth at FEM nodes (gt_nodes), ground truth at voxels (gt_voxels) — from analytic tumor definitions
+- **MCX channel**: Monte Carlo photon simulation fluence volumes (.jnii) + multi-angle 2D detector projections (proj.npz) — from MCX GPU simulation
+
+Reference implementations: `/home/foods/pro/mcx_simulation` (P1: MCX+DE with Digimouse brain) and `/home/foods/pro/mcx_simulation/data_build` (MS-GDUN: DE with Gaussian sphere tumors).
 
 ## Common Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Use uv run or activate .venv — NOT system python
+uv run python scripts/01_generate_mesh.py              # Mesh + system matrix (once)
+uv run python scripts/02_generate_dataset.py -n 50    # DE channel samples
+uv run python scripts/step0f_mcx_volume.py             # MCX volume asset (once)
+uv run python scripts/step0g_view_config.py            # Camera model asset (once)
+uv run python scripts/run_all.py -n 50 --enable_mcx   # Full dual-channel (DE+MCX)
 
-# Generate mesh and system matrix (run once before samples)
-python scripts/01_generate_mesh.py
+# MCX channel only (on existing samples)
+uv run python scripts/run_mcx_pipeline.py \
+  --samples_dir data/gaussian_1000/samples --projection_only  # project .jnii → proj.npz
 
-# Generate dataset samples
-python scripts/02_generate_dataset.py --num_samples 100
-
-# Verify dataset
-python scripts/03_verify_dataset.py --sample_idx 0
-
-# Verify all imports work correctly
-cd /home/foods/pro/FMT-SimGen && uv run python -c "
-import sys; sys.path.insert(0, '.')
-from fmt_simgen import (DigimouseAtlas, MeshGenerator, FEMSolver, OpticalParameterManager,
-    TumorGenerator, TumorSample, AnalyticFocus, DualSampler, DatasetBuilder)
-print('All imports successful!')
-"
+# Verify imports
+uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera; print('OK')"
 ```
 
-## Architecture
+## Architecture: Dual-Channel Pipeline
 
-The pipeline is orchestrated by `DatasetBuilder` in `fmt_simgen/dataset/builder.py`. It coordinates:
+### Shared assets (Step 0)
+| Step | Script | Output |
+|------|---------|--------|
+| 0a | `run_step0a_atlas.py` | Atlas analysis |
+| 0b | `step0b_generate_mesh.py` | `assets/mesh/mesh.npz` |
+| 0c | `step0c_fem_matrix.py` | `assets/mesh/system_matrix.*.npz` |
+| 0d | `step0d_voxel_grid.py` | `assets/mesh/voxel_grid.npz` |
+| 0e | `step0e_graph_laplacian.py` | Graph Laplacian for regularization |
+| 0f | `step0f_mcx_volume.py` | `output/shared/mcx_volume_trunk.bin` (trunk-cropped atlas) |
+| 0g | `step0g_view_config.py` | `output/shared/view_config.json` (camera model) |
 
-1. **Atlas** (`fmt_simgen/atlas/digimouse.py`) - Loads Digimouse whole-body atlas (380×992×208 voxels at 0.1mm)
-2. **Mesh** (`fmt_simgen/mesh/mesh_generator.py`) - Generates tetrahedral FEM mesh via iso2mesh
-3. **Physics** (`fmt_simgen/physics/fem_solver.py`) - Assembles and solves the diffusion equation FEM system
-4. **Tumor** (`fmt_simgen/tumor/tumor_generator.py`) - Generates analytic Gaussian sphere/ellipsoid tumors
-5. **Sampling** (`fmt_simgen/sampling/dual_sampler.py`) - Dual-carrier GT sampling at FEM nodes and voxel grid
-6. **Dataset** (`fmt_simgen/dataset/builder.py`) - Orchestrates the full pipeline
+### DE channel (Steps 1–4)
+- `DatasetBuilder` (`fmt_simgen/dataset/builder.py`) orchestrates per-sample generation
+- Per-sample output: `tumor_params.json`, `measurement_b.npy`, `gt_nodes.npy`, `gt_voxels.npy`
 
-Output from `01_generate_mesh.py`:
-- `assets/mesh/mesh.npz` - Tetrahedral mesh (nodes, elements, surface faces)
-- `assets/mesh/system_matrix.*.npz` - Pre-assembled FEM system matrices
+### MCX channel (Steps 2m–4m)
+| Step | Script | Module | Output |
+|------|--------|--------|--------|
+| 2m | `step2m_generate_mcx_sources.py` | `mcx_config.py` | `{id}.json` + `source-{id}.bin` |
+| 3m | `step3m_mcx_simulate.py` | `mcx_runner.py` | `{id}.jnii` (3D fluence) |
+| 4m | `step4m_mcx_projection.py` | `mcx_projection.py` | `proj.npz` (7-angle projections) |
 
-Output from `02_generate_dataset.py` (per sample):
-- `measurement_b.npy` - Surface fluence measurements
-- `gt_nodes.npy` - Ground truth at FEM nodes
-- `gt_voxels.npy` - Ground truth at voxel grid
-- `tumor_params.json` - Tumor parameters
+### Dual-channel entry points
+- `scripts/run_all.py` — orchestrates DE + MCX with `--enable_mcx`
+- `scripts/run_mcx_pipeline.py` — standalone MCX (2m→3m→4m), supports `--projection_only`
+
+## Key Coordinate Systems
+
+### Digimouse atlas volume `[X=380, Y=992, Z=208]`
+- X: Left(−19mm)→Right(+19mm), Y: Anterior(−50mm)→Posterior(+50mm), Z: Inferior(−10mm)→Superior(+11mm)
+- Dorsal(back)=+Z, Ventral(belly)=−Z
+
+### MCX trunk volume (after Step 0f crop + downsample)
+- Shape: `[Z=104, Y=200, X=190]`, voxel_size=0.2mm
+- JNII→XYZ: `nifti.transpose(2, 1, 0)` → `[X=190, Y=200, Z=104]`
+- Physical origin (voxel [0,0,0] world position): `trunk_offset_mm = [0, 30, 0]`
+
+### MCX projection camera (TurntableCamera)
+- Camera at `[0, 0, D]`, looking toward origin along −Z, rotation around Y axis
+- Angles: `[-90, -60, -30, 0, 30, 60, 90]` degrees
+- Orthographic: all rays parallel to −Z, keeps shallowest non-zero voxel per pixel
+
+## Per-Sample Output Structure
+
+```
+data/{experiment}/samples/sample_XXXX/
+├── tumor_params.json        # Shared: tumor parameters
+├── measurement_b.npy        # DE: surface fluence [N_d]
+├── gt_nodes.npy             # DE: GT at FEM nodes [N_n]
+├── gt_voxels.npy            # DE: GT at voxels [Nx×Ny×Nz]
+├── sample_XXXX.json         # MCX: simulation config
+├── source-sample_XXXX.bin   # MCX: source pattern binary
+├── sample_XXXX.jnii         # MCX: fluence volume (JNII format)
+└── proj.npz                 # MCX: 7-angle projections {"-90": [H,W], ...}
+```
 
 ## Configuration
 
-All parameters are in `config/default.yaml`. Key sections:
-- `atlas.path` - Digimouse atlas location (requires external data at `/home/foods/pro/mcx_simulation/ct_data/`)
-- `mesh` - Target node count (~10000), volume constraints
-- `physics` - Optical parameters (μ_a, μ_s', g, n) per tissue type
-- `tumor` - Number of foci distribution, shapes, radius/depth ranges
-- `dataset` - Number of samples, voxel spacing, output path
+All parameters in `config/default.yaml`. MCX-specific keys:
+- `mcx.trunk_offset_mm`: physical offset `[0, 30, 0]` for MCX volume origin
+- `mcx.voxel_size_mm`: 0.2mm (2× downsample from 0.1mm atlas)
+- `mcx.volume_shape`: `[104, 200, 190]` (Z, Y, X)
+- `view_config.angles`: `[-90, -60, -30, 0, 30, 60, 90]`
+- `view_config.pose`: `"prone"` or `"supine"`
+
+## MCX Module Reference
+
+| Module | Role |
+|--------|------|
+| `mcx_volume.py` | Load atlas, crop trunk, downsample, save binary volume |
+| `mcx_config.py` | Generate MCX JSON config and source binary from tumor_params |
+| `mcx_source.py` | Pattern3D fluence source definition |
+| `mcx_runner.py` | MCX CLI invocation, auto-detects `mcx` (GPU) vs `mcxcl` (OpenCL/CPU) |
+| `mcx_projection.py` | Orthographic projection from fluence volume to 7-angle proj.npz |
+| `view_config.py` | TurntableCamera: pose, occlusion, surface normals, project_volume |
 
 ## Code Style
 
-- Classes: PascalCase (e.g., `DigimouseAtlas`, `FEMSolver`)
-- Functions/methods/variables: snake_case
-- Type annotations required for all function parameters and returns
-- Use `logging` module (not print) with appropriate levels
-- Google-style docstrings with parameter/return sections
--具体异常类型 for errors (not bare `except Exception`)
-
-## Important Notes
-
-**Python environment**: Use `uv run` or activate the `.venv` via `source .venv/bin/activate`. All scripts must be run with `uv run python` or `python` (after venv activation), NOT system python or miniforge3 python directly. Example:
-```bash
-uv run python scripts/01_generate_mesh.py
-```
-
-**Volume data order**: Digimouse volume is `[X, Y, Z]` where:
-- X = Left(-19mm)→Right(+19mm), 380 voxels
-- Y = Anterior(-50mm)→Posterior(+50mm), 992 voxels
-- Z = Inferior(-10mm)→Superior(+11mm), 208 voxels
-- Dorsal(back)=+Z, Ventral(belly)=-Z
-
-**Float division trap**: Use `int(round(x))` not `int(x)` when converting floats to voxel counts.
+- Classes: PascalCase, functions/variables: snake_case
+- Type annotations required on all function parameters and returns
+- Use `logging` (not print), module-level `logger = logging.getLogger(__name__)`
+- Specific exception types (not bare `except Exception`)
+- Float division: `int(round(x))` not `int(x)` for voxel count conversion
+- See `AGENTS.md` for full style guide (imports, docstrings, data structures)

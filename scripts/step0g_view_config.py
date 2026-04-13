@@ -154,12 +154,32 @@ def main() -> None:
         }
         all_visible_combined.update(visible_idx.tolist())
 
-    union_fraction = len(all_visible_combined) / total_surface * 100
-    logger.info(f"Union of all visible nodes: {len(all_visible_combined)} / {total_surface} ({union_fraction:.1f}%)")
+    # Build visible mask: map global node indices to local surface node indices
+    # visible_mask[i] = True if surface_node_indices[i] is visible from at least one angle
+    logger.info("Building visible mask...")
+    visible_mask = np.zeros(total_surface, dtype=bool)
+    for global_idx in all_visible_combined:
+        # Find local index in surface_node_indices
+        local_idx = np.where(surface_node_indices == global_idx)[0]
+        if len(local_idx) > 0:
+            visible_mask[local_idx[0]] = True
+
+    n_visible_union = int(np.count_nonzero(visible_mask))
+    union_fraction = n_visible_union / total_surface * 100
+    logger.info(
+        f"Union of all visible nodes: {n_visible_union} / {total_surface} ({union_fraction:.1f}%)"
+    )
+
+    # Save visible mask
+    visible_mask_path = output_dir / "visible_mask.npy"
+    np.save(visible_mask_path, visible_mask)
+    logger.info(f"Visible mask saved to {visible_mask_path}")
 
     # Find angle with most visible nodes
     angle_most_visible = max(stats.keys(), key=lambda a: stats[a]["n_visible"])
-    logger.info(f"Angle with most visible nodes: {angle_most_visible}° ({stats[angle_most_visible]['n_visible']})")
+    logger.info(
+        f"Angle with most visible nodes: {angle_most_visible}° ({stats[angle_most_visible]['n_visible']})"
+    )
 
     # Generate visualization
     vis_path = output_dir / "view_config_vis.png"
@@ -178,8 +198,11 @@ def main() -> None:
         "platform_z_center": camera.z_center,
         "stats_per_angle": stats,
         "total_surface_nodes": total_surface,
-        "union_visible_nodes": len(all_visible_combined),
+        "union_visible_nodes": n_visible_union,
         "union_fraction_percent": round(union_fraction, 2),
+        "visible_mask_file": "visible_mask.npy",
+        "n_visible": n_visible_union,
+        "visible_ratio": round(n_visible_union / total_surface, 4),
         "angle_most_visible": angle_most_visible,
         "most_visible_count": stats[angle_most_visible]["n_visible"],
     }
@@ -193,7 +216,9 @@ def main() -> None:
     logger.info("\n=== Visibility Summary ===")
     for angle in sorted(stats.keys()):
         s = stats[angle]
-        logger.info(f"  {angle:4d}°: {s['n_visible']:4d} nodes ({s['fraction_of_surface']:.1f}%)")
+        logger.info(
+            f"  {angle:4d}°: {s['n_visible']:4d} nodes ({s['fraction_of_surface']:.1f}%)"
+        )
     logger.info(f"  Union: {len(all_visible_combined)} nodes ({union_fraction:.1f}%)")
 
     # Acceptance checks
@@ -204,9 +229,13 @@ def main() -> None:
     for angle in camera.angles:
         n = stats[angle]["n_visible"]
         if 2000 <= n <= 5000:
-            logger.info(f"  [PASS] Angle {angle}°: {n} visible nodes (in 2000-5000 range)")
+            logger.info(
+                f"  [PASS] Angle {angle}°: {n} visible nodes (in 2000-5000 range)"
+            )
         else:
-            logger.warning(f"  [WARN] Angle {angle}°: {n} visible nodes (outside 2000-5000 range)")
+            logger.warning(
+                f"  [WARN] Angle {angle}°: {n} visible nodes (outside 2000-5000 range)"
+            )
             checks_passed = False
 
     # Check 2: Union covers >60% of surface nodes
@@ -223,7 +252,9 @@ def main() -> None:
         logger.warning(f"  [WARN] {angle_most_visible}° has most visible nodes, not 0°")
 
     # Check 4: ±90° have fewer visible nodes
-    avg_90 = (stats.get(90, {}).get("n_visible", 0) + stats.get(-90, {}).get("n_visible", 0)) / 2
+    avg_90 = (
+        stats.get(90, {}).get("n_visible", 0) + stats.get(-90, {}).get("n_visible", 0)
+    ) / 2
     avg_0 = stats.get(0, {}).get("n_visible", 0)
     if avg_90 < avg_0:
         logger.info(f"  [PASS] ±90° ({avg_90:.0f}) fewer than 0° ({avg_0:.0f})")

@@ -26,6 +26,7 @@ from fmt_simgen.physics.optical_params import OpticalParameterManager
 from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
 from fmt_simgen.sampling.dual_sampler import DualSampler, VoxelGridConfig
+from fmt_simgen.view_config import TurntableCamera
 
 
 @dataclass
@@ -36,6 +37,7 @@ class SampleOutput:
     gt_nodes: np.ndarray
     gt_voxels: np.ndarray
     tumor_params: Dict
+    visible_mask: Optional[np.ndarray] = None
 
 
 class DatasetBuilder:
@@ -63,8 +65,11 @@ class DatasetBuilder:
         self.opt_manager: Optional[OpticalParameterManager] = None
         self.fem_solver: Optional[FEMSolver] = None
         self.tumor_generator: Optional[TumorGenerator] = None
+        self.camera: Optional[TurntableCamera] = None
 
         self._mesh_data: Optional[MeshData] = None
+        self._visible_mask: Optional[np.ndarray] = None
+        self._visible_indices: Optional[np.ndarray] = None
 
     def build_shared_assets(self, force_regenerate: bool = False) -> Dict[str, Path]:
         """Generate mesh and system matrix (once per dataset).
@@ -232,6 +237,51 @@ class DatasetBuilder:
             nodes=self._mesh_data.nodes, voxel_grid_config=voxel_grid_config
         )
 
+        # ============ Setup TurntableCamera for visible surface filtering ============
+        view_config = self.config.get("view_config", {})
+        if view_config.get("angles"):
+            self.camera = TurntableCamera(view_config)
+            node_normals = self.camera.compute_surface_normals(
+                self._mesh_data.nodes, self._mesh_data.surface_faces
+            )
+            visible_per_angle = self.camera.get_all_visible_nodes_per_angle(
+                self._mesh_data.nodes, node_normals
+            )
+            # Union of visible nodes across all angles
+            visible_all = set()
+            for angle, vis_nodes in visible_per_angle.items():
+                visible_all.update(vis_nodes.tolist())
+            # visible_all contains absolute node indices; map to surface positions
+            surface_node_set = set(self._mesh_data.surface_node_indices.tolist())
+            surface_pos_map = {
+                node: pos for pos, node in enumerate(self._mesh_data.surface_node_indices)
+            }
+            visible_surface_pos = sorted(
+                surface_pos_map[n] for n in visible_all if n in surface_node_set
+            )
+            self._visible_indices = np.array(visible_surface_pos, dtype=np.int32)
+            total_surface = len(self._mesh_data.surface_node_indices)
+            n_visible = len(self._visible_indices)
+            print(f"  ViewConfig: {n_visible}/{total_surface} surface nodes visible "
+                  f"({100*n_visible/total_surface:.1f}%) across {len(view_config['angles'])} angles")
+            # Build visible_mask [S] where True = visible at any angle
+            self._visible_mask = np.zeros(total_surface, dtype=bool)
+            self._visible_mask[self._visible_indices] = True
+            # Print per-angle stats
+            for angle in sorted(visible_per_angle.keys()):
+                n_angle = len(visible_per_angle[angle])
+                print(f"    Angle {angle:4d}°: {n_angle:4d} visible "
+                      f"({100*n_angle/total_surface:.1f}%)")
+            # Save visible_mask.npy to output/shared/ (shared across all samples)
+            shared_dir = Path("output/shared")
+            shared_dir.mkdir(parents=True, exist_ok=True)
+            np.save(shared_dir / "visible_mask.npy", self._visible_mask)
+            print(f"  visible_mask saved to {shared_dir / 'visible_mask.npy'}")
+        else:
+            self.camera = None
+            self._visible_mask = None
+            self._visible_indices = None
+
         # Quality filter settings
         filter_enabled = self.quality_config.get("enabled", False)
         min_b_max = self.quality_config.get("min_b_max", 0.001)
@@ -327,6 +377,9 @@ class DatasetBuilder:
                     last_tumor_sample = tumor_sample
                     last_gt_nodes = gt_nodes
                     last_gt_voxels = gt_voxels
+                    # Apply visible node mask: zero out invisible surface nodes
+                    if self._visible_mask is not None:
+                        measurement_b = measurement_b[self._visible_mask]  # [N_surface] -> [V_visible]
                     last_measurement_b = measurement_b
                     last_b_max = b_max
                     last_gt_nonzero_frac = gt_nonzero_frac
@@ -361,6 +414,7 @@ class DatasetBuilder:
                 gt_nodes=last_gt_nodes,
                 gt_voxels=last_gt_voxels,
                 tumor_params=tumor_params,
+                visible_mask=self._visible_mask,
             )
             self._save_sample(sample, samples_output, saved_count)
 
@@ -439,6 +493,8 @@ class DatasetBuilder:
             "num_samples": len(samples_metadata),
             "mesh_nodes": int(self._mesh_data.nodes.shape[0]),
             "mesh_surface_nodes": int(len(self._mesh_data.surface_node_indices)),
+            "visible_surface_nodes": int(np.sum(self._visible_mask)) if self._visible_mask is not None else None,
+            "visible_ratio": float(np.mean(self._visible_mask)) if self._visible_mask is not None else None,
             "config": self.config,
             "samples": samples_metadata,
         }
