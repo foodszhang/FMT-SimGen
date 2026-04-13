@@ -210,6 +210,12 @@ def generate_mcx_config_json(
         "Optode": {
             "Source": {
                 "Pos": [float(source_x), float(source_y), float(source_z)],
+                "Dir": [
+                    0,
+                    0,
+                    1,
+                    "_NaN_",
+                ],  # isotropic 源不需要方向，但 MCX 要求非零向量
                 "Type": "isotropic",  # 各向同性点源，模拟荧光发射
             }
         },
@@ -298,7 +304,18 @@ def load_mcx_fluence(jnii_path: Path) -> np.ndarray:
     else:
         fluence = data
 
-    return np.asarray(fluence, dtype=np.float64)
+    fluence = np.asarray(fluence, dtype=np.float64)
+
+    # MCX 输出可能是 5D (nz, ny, nx, 1, 1) 或 4D (nz, ny, nx, 1)，挤压到 3D
+    if fluence.ndim > 3:
+        fluence = fluence.squeeze()
+        if fluence.ndim > 3:
+            # 如果仍然 >3D，取第一个时间步
+            fluence = (
+                fluence[:, :, :, 0, 0] if fluence.ndim == 5 else fluence[:, :, :, 0]
+            )
+
+    return fluence
 
 
 def extract_surface_fluence(fluence: np.ndarray, surface_z: int = 0) -> np.ndarray:
@@ -447,9 +464,15 @@ def run_point_source_mcx(
     # 提取表面 fluence
     surface = extract_surface_fluence(fluence, surface_z=0)
 
-    # 提取径向分布
-    nz, ny, nx = volume_dict["vol_shape"]
-    center_xy = (nx // 2, ny // 2)
+    # 提取径向分布：使用表面峰值位置作为中心（而非假设在体积中心）
+    # 这样可以容忍 MCX 仿真中的轻微散射偏转
+    ny, nx = surface.shape
+    peak_idx = np.unravel_index(np.argmax(surface), surface.shape)
+    center_xy = (peak_idx[1], peak_idx[0])  # (x, y) = (col, row)
+    logger.info(
+        f"  Surface peak at pixel {peak_idx}, using as center for radial profile"
+    )
+
     rho_mm, intensity = extract_radial_profile(
         surface_image=surface,
         center_xy=center_xy,

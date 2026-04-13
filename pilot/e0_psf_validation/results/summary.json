@@ -1,0 +1,197 @@
+{
+  "decision": "NOGO",
+  "recommendation": "\u4e3b\u7ebf\u65b9\u6848\u4e0d\u53ef\u884c\u3002Gaussian PSF \u4e0e MCX \u5dee\u5f02\u8fc7\u5927\u3002\u5efa\u8bae\uff1a\u5207\u6362\u5230 MCX \u9884\u8ba1\u7b97 PSF \u67e5\u627e\u8868\u65b9\u6848\u3002",
+  "configs": {
+    "C01": {
+      "ncc_mcx_gauss": 0.527569459308435,
+      "fwhm_ratio": 13.333333333333332,
+      "verdict": "NOGO"
+    },
+    "C02": {
+      "ncc_mcx_gauss": 0.6582601020992247,
+      "fwhm_ratio": 20.000000000000004,
+      "verdict": "NOGO"
+    },
+    "C03": {
+      "ncc_mcx_gauss": 0.5973717076757662,
+      "fwhm_ratio": 26.666666666666664,
+      "verdict": "NOGO"
+    },
+    "C04": {
+      "ncc_mcx_gauss": 0.41763469126945696,
+      "fwhm_ratio": 9.333333333333334,
+      "verdict": "NOGO"
+    },
+    "C05": {
+      "ncc_mcx_gauss": 0.3098552608711644,
+      "fwhm_ratio": 13.0,
+      "verdict": "NOGO"
+    },
+    "C06": {
+      "ncc_mcx_gauss": 0.31281260278834616,
+      "fwhm_ratio": 17.0,
+      "verdict": "NOGO"
+    },
+    "C07": {
+      "ncc_mcx_gauss": 0.38178760972475684,
+      "fwhm_ratio": 9.333333333333334,
+      "verdict": "INFO"
+    },
+    "C08": {
+      "ncc_mcx_gauss": 0.30563976901325,
+      "fwhm_ratio": 13.333333333333332,
+      "verdict": "INFO"
+    },
+    "C09": {
+      "ncc_mcx_gauss": 0.3285603499548165,
+      "fwhm_ratio": 17.666666666666668,
+      "verdict": "INFO"
+    }
+  },
+  "metrics": {
+    "C01": {
+      "ncc_mcx_semi": 0.5463979539773631,
+      "ncc_mcx_gauss": 0.527569459308435,
+      "ncc_semi_gauss": 0.9985020306353353,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 2.224448897795591,
+      "fwhm_gauss": 2.4048096192384767,
+      "fwhm_ratio_mcx_semi": 12.333333333333334,
+      "fwhm_ratio_mcx_gauss": 13.333333333333332,
+      "peak_ratio_mcx_semi": 0.015956584339326466,
+      "peak_ratio_mcx_gauss": 0.015392442830479193,
+      "rmse_semi": 0.19823845836180645,
+      "rmse_gauss": 0.20798262822460975,
+      "depth_mm": 1.5,
+      "tissue_type": "muscle"
+    },
+    "C02": {
+      "ncc_mcx_semi": 0.6688851231072164,
+      "ncc_mcx_gauss": 0.6582601020992247,
+      "ncc_semi_gauss": 0.9993813640055538,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 3.4268537074148293,
+      "fwhm_gauss": 3.6072144288577155,
+      "fwhm_ratio_mcx_semi": 19.0,
+      "fwhm_ratio_mcx_gauss": 20.000000000000004,
+      "peak_ratio_mcx_semi": 0.0013959686447959788,
+      "peak_ratio_mcx_gauss": 0.0013655865512810295,
+      "rmse_semi": 0.23077502854938986,
+      "rmse_gauss": 0.2381877431172154,
+      "depth_mm": 3.0,
+      "tissue_type": "muscle"
+    },
+    "C03": {
+      "ncc_mcx_semi": 0.6029816033906392,
+      "ncc_mcx_gauss": 0.5973717076757662,
+      "ncc_semi_gauss": 0.999705883944926,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 4.629258517034068,
+      "fwhm_gauss": 4.809619238476953,
+      "fwhm_ratio_mcx_semi": 25.666666666666668,
+      "fwhm_ratio_mcx_gauss": 26.666666666666664,
+      "peak_ratio_mcx_semi": 8.682072746760356e-05,
+      "peak_ratio_mcx_gauss": 8.556133800058966e-05,
+      "rmse_semi": 0.28274285116334635,
+      "rmse_gauss": 0.2881898089039583,
+      "depth_mm": 5.0,
+      "tissue_type": "muscle"
+    },
+    "C04": {
+      "ncc_mcx_semi": 0.4254689320594994,
+      "ncc_mcx_gauss": 0.41763469126945696,
+      "ncc_semi_gauss": 0.9995957762582695,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 1.6232464929859718,
+      "fwhm_gauss": 1.6833667334669338,
+      "fwhm_ratio_mcx_semi": 9.0,
+      "fwhm_ratio_mcx_gauss": 9.333333333333334,
+      "peak_ratio_mcx_semi": 7080680.124955748,
+      "peak_ratio_mcx_gauss": 6955653.800629154,
+      "rmse_semi": 0.1817559056041889,
+      "rmse_gauss": 0.18565013341560832,
+      "depth_mm": 1.5,
+      "tissue_type": "liver"
+    },
+    "C05": {
+      "ncc_mcx_semi": 0.3111642208051976,
+      "ncc_mcx_gauss": 0.3098552608711644,
+      "ncc_semi_gauss": 0.9998322422513204,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 2.344689378757515,
+      "fwhm_gauss": 2.344689378757515,
+      "fwhm_ratio_mcx_semi": 13.0,
+      "fwhm_ratio_mcx_gauss": 13.0,
+      "peak_ratio_mcx_semi": 4502.292290967434,
+      "peak_ratio_mcx_gauss": 4502.292290967434,
+      "rmse_semi": 0.23094485423365196,
+      "rmse_gauss": 0.23177315890351444,
+      "depth_mm": 3.0,
+      "tissue_type": "liver"
+    },
+    "C06": {
+      "ncc_mcx_semi": 0.3129472260200837,
+      "ncc_mcx_gauss": 0.31281260278834616,
+      "ncc_semi_gauss": 0.9999068644490132,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 3.066132264529058,
+      "fwhm_gauss": 3.066132264529058,
+      "fwhm_ratio_mcx_semi": 17.0,
+      "fwhm_ratio_mcx_gauss": 17.0,
+      "peak_ratio_mcx_semi": 157.19710164484584,
+      "peak_ratio_mcx_gauss": 157.19710164484584,
+      "rmse_semi": 0.2643290933509499,
+      "rmse_gauss": 0.2642023116752126,
+      "depth_mm": 5.0,
+      "tissue_type": "liver"
+    },
+    "C07": {
+      "ncc_mcx_semi": 0.38957687277560454,
+      "ncc_mcx_gauss": 0.38178760972475684,
+      "ncc_semi_gauss": 0.9995570642317617,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 1.6232464929859718,
+      "fwhm_gauss": 1.6833667334669338,
+      "fwhm_ratio_mcx_semi": 9.0,
+      "fwhm_ratio_mcx_gauss": 9.333333333333334,
+      "peak_ratio_mcx_semi": 0.9363753468330888,
+      "peak_ratio_mcx_gauss": 0.9190223084228951,
+      "rmse_semi": 0.18685371197907438,
+      "rmse_gauss": 0.19094593508471752,
+      "depth_mm": 1.5,
+      "tissue_type": "bilayer"
+    },
+    "C08": {
+      "ncc_mcx_semi": 0.3068493818601542,
+      "ncc_mcx_gauss": 0.30563976901325,
+      "ncc_semi_gauss": 0.99980750993805,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 2.4048096192384767,
+      "fwhm_gauss": 2.4048096192384767,
+      "fwhm_ratio_mcx_semi": 13.333333333333332,
+      "fwhm_ratio_mcx_gauss": 13.333333333333332,
+      "peak_ratio_mcx_semi": 0.005310975040251404,
+      "peak_ratio_mcx_gauss": 0.005310975040251404,
+      "rmse_semi": 0.23424957701533997,
+      "rmse_gauss": 0.23499569312526117,
+      "depth_mm": 3.0,
+      "tissue_type": "bilayer"
+    },
+    "C09": {
+      "ncc_mcx_semi": 0.3306113745387149,
+      "ncc_mcx_gauss": 0.3285603499548165,
+      "ncc_semi_gauss": 0.9999382428284374,
+      "fwhm_mcx": 0.18036072144288576,
+      "fwhm_semi": 3.186372745490982,
+      "fwhm_gauss": 3.186372745490982,
+      "fwhm_ratio_mcx_semi": 17.666666666666668,
+      "fwhm_ratio_mcx_gauss": 17.666666666666668,
+      "peak_ratio_mcx_semi": 0.0047114773202374385,
+      "peak_ratio_mcx_gauss": 0.0047114773202374385,
+      "rmse_semi": 0.26628565496281115,
+      "rmse_gauss": 0.26782557127586337,
+      "depth_mm": 5.0,
+      "tissue_type": "bilayer"
+    }
+  }
+}
