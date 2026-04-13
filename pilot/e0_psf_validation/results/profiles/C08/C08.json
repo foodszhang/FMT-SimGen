@@ -2,9 +2,9 @@
   "Domain": {
     "VolumeFile": "volume.bin",
     "Dim": [
-      200,
       300,
-      300
+      300,
+      200
     ],
     "OriginType": 1,
     "LengthUnit": 0.1,

@@ -382,8 +382,12 @@ def run_comparison(profiles_dir: str, output_dir: str) -> Tuple[Dict, Dict]:
         rho_mcx = data["rho_mcx"]
         I_mcx = data["I_mcx"]
 
-        if not np.allclose(rho_analytic, rho_mcx):
-            I_mcx_interp = np.interp(rho_analytic, rho_mcx, I_mcx)
+        # 确保数组长度兼容
+        if len(rho_mcx) != len(rho_analytic):
+            # 使用插值将 MCX 插值到 analytic 的网格上
+            from numpy import interp
+
+            I_mcx_interp = interp(rho_analytic, rho_mcx, I_mcx)
         else:
             I_mcx_interp = I_mcx
 

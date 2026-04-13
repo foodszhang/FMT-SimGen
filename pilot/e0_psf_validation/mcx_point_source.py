@@ -184,15 +184,16 @@ def generate_mcx_config_json(
     # 深度转体素坐标（z=0 为表面）
     source_z = source_depth_mm / voxel_size
 
-    # 保存体积二进制
+    # 保存体积二进制：MCX 需要 ZYX 顺序
     volume_bin_path = output_dir / "volume.bin"
     volume_dict["volume"].tofile(volume_bin_path)
 
     # MCX JSON 配置
+    # MCX Dim 格式是 [nx, ny, nz]，不是 [nz, ny, nx]
     config = {
         "Domain": {
             "VolumeFile": "volume.bin",
-            "Dim": [nz, ny, nx],
+            "Dim": [nx, ny, nz],  # MCX 使用 [X, Y, Z] 顺序
             "OriginType": 1,  # 原点在角落
             "LengthUnit": voxel_size,
             "Media": volume_dict["props"],
@@ -292,7 +293,7 @@ def load_mcx_fluence(jnii_path: Path) -> np.ndarray:
         jnii_path: .jnii 文件路径
 
     Returns:
-        fluence 3D 数组 (nz, ny, nx)
+        fluence 3D 数组 (nx, ny, nz) - MCX Dim 顺序
     """
     import jdata as jd
 
@@ -306,11 +307,10 @@ def load_mcx_fluence(jnii_path: Path) -> np.ndarray:
 
     fluence = np.asarray(fluence, dtype=np.float64)
 
-    # MCX 输出可能是 5D (nz, ny, nx, 1, 1) 或 4D (nz, ny, nx, 1)，挤压到 3D
+    # MCX 输出可能是 5D 或 4D，挤压到 3D
     if fluence.ndim > 3:
         fluence = fluence.squeeze()
         if fluence.ndim > 3:
-            # 如果仍然 >3D，取第一个时间步
             fluence = (
                 fluence[:, :, :, 0, 0] if fluence.ndim == 5 else fluence[:, :, :, 0]
             )
@@ -321,14 +321,18 @@ def load_mcx_fluence(jnii_path: Path) -> np.ndarray:
 def extract_surface_fluence(fluence: np.ndarray, surface_z: int = 0) -> np.ndarray:
     """提取表面 fluence
 
+    MCX 输出形状: (nx, ny, nz)
+    表面是 z=0 第一层
+
     Args:
-        fluence: 3D fluence 数组 (nz, ny, nx)
+        fluence: 3D fluence 数组 (nx, ny, nz)
         surface_z: 表面 z 索引（默认 0）
 
     Returns:
-        2D surface image (ny, nx)
+        2D surface image (nx, ny)
     """
-    return fluence[surface_z, :, :]
+    # MCX 现在的形状是 (nx, ny, nz)
+    return fluence[:, :, surface_z]
 
 
 def extract_radial_profile(
@@ -336,47 +340,41 @@ def extract_radial_profile(
     center_xy: Tuple[int, int],
     voxel_size_mm: float = 0.1,
     rho_max_mm: float = 15.0,
-    n_bins: int = 500,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """从 2D surface image 提取径向平均分布
 
-    对以 center_xy 为圆心的同心环做 azimuthal average
-
     Args:
-        surface_image: 2D 表面 fluence (ny, nx)
+        surface_image: 2D 表面 fluence (nx, ny) - MCX 输出是 (nx, ny) 顺序
         center_xy: 点源正上方的像素坐标 (x, y)
         voxel_size_mm: 体素大小 mm
         rho_max_mm: 最大径向距离 mm
-        n_bins: 采样点数
 
     Returns:
         (rho_mm, intensity): 径向距离和平均强度
     """
-    ny, nx = surface_image.shape
-    cx, cy = center_xy
+    nx, ny = surface_image.shape  # 注意：MCX 输出是 (nx, ny) 顺序
+    cx, cy = center_xy  # (x, y)
 
-    # 创建距离网格
-    y_indices, x_indices = np.ogrid[:ny, :nx]
-    dist = np.sqrt((x_indices - cx) ** 2 + (y_indices - cy) ** 2)
-    dist_mm = dist * voxel_size_mm
+    # 创建距离网格（体素单位）
+    # x 沿着列索引，y 沿着行索引
+    y_grid, x_grid = np.meshgrid(np.arange(ny), np.arange(nx), indexing="ij")
+    dist_voxels = np.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)
 
-    # 径向平均
-    rho_mm = np.linspace(0, rho_max_mm, n_bins)
-    intensity = np.zeros(n_bins)
+    # 使用体素级 bins
+    max_r_voxels = int(rho_max_mm / voxel_size_mm)
+    rho_voxels = np.arange(max_r_voxels + 1)
+    rho_mm = rho_voxels * voxel_size_mm
+    intensity = np.zeros(len(rho_mm))
 
-    for i, r in enumerate(rho_mm):
+    for i, r in enumerate(rho_voxels):
         if i == 0:
-            # 第一个 bin: 包含 ρ=0 附近的体素
-            mask = dist_mm <= rho_mm[1] / 2
+            mask = dist_voxels < 0.5
         else:
-            # 中间 bin: 半径 r ± delta/2
-            delta = rho_mm[1] - rho_mm[0]
-            mask = (dist_mm >= r - delta / 2) & (dist_mm < r + delta / 2)
+            mask = (dist_voxels >= r - 0.5) & (dist_voxels < r + 0.5)
 
         if mask.sum() > 0:
             intensity[i] = surface_image[mask].mean()
         else:
-            # 如果没有体素，使用最近的非零值
             intensity[i] = intensity[i - 1] if i > 0 else 0
 
     return rho_mm, intensity
@@ -478,7 +476,6 @@ def run_point_source_mcx(
         center_xy=center_xy,
         voxel_size_mm=voxel_size_mm,
         rho_max_mm=15.0,
-        n_bins=500,
     )
 
     # 保存结果
