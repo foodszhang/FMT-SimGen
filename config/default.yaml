@@ -192,8 +192,8 @@ mcx:
   # 体素大小（mm）- 原始 0.1mm，2× 下采样后 0.2mm
   voxel_size_mm: 0.2
 
-  # 裁剪起点在原始 atlas 中的物理偏移（mm）
-  # Y offset = y_start * voxel_size = 300 * 0.1 = 30mm
+  # 裁剪后体积起点在原始 atlas 中的物理偏移（mm）
+  # Y offset = y_start * original_voxel_size = 300 * 0.1 = 30mm
   trunk_offset_mm: [0, 30, 0]
 
   # MCX Dim（Z, Y, X 顺序）- 由脚本自动计算

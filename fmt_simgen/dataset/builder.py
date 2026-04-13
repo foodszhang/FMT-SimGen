@@ -231,6 +231,9 @@ class DatasetBuilder:
             mesh_nodes=self._mesh_data.nodes,
             tissue_labels=self._mesh_data.tissue_labels,
             elements=self._mesh_data.elements,
+            organ_constraint_disabled=self.tumor_config.get(
+                "organ_constraint_disabled", False
+            ),
         )
 
         dual_sampler = DualSampler(

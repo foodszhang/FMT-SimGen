@@ -183,6 +183,7 @@ class TumorGenerator:
         mesh_nodes=None,
         tissue_labels=None,
         elements=None,
+        organ_constraint_disabled: bool = False,
     ):
         """Initialize tumor generator.
 
@@ -209,6 +210,11 @@ class TumorGenerator:
             FEM mesh nodes [N×3] for organ constraint validation.
         tissue_labels : np.ndarray, optional
             Tissue labels [N] for mesh nodes.
+        elements : np.ndarray, optional
+            FEM mesh elements [N_tets×4] for organ constraint validation.
+        organ_constraint_disabled : bool, optional
+            If True, skip organ boundary constraint check (use for verification
+            datasets where the constraint is too restrictive for the mesh).
         """
         self.config = config
         self.atlas = atlas
@@ -216,6 +222,7 @@ class TumorGenerator:
         self.mesh_nodes = mesh_nodes
         self.tissue_labels = tissue_labels
         self.elements = elements
+        self._organ_constraint_disabled = organ_constraint_disabled
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -426,6 +433,8 @@ class TumorGenerator:
         bool
             True if placement is valid.
         """
+        if self._organ_constraint_disabled:
+            return True  # Constraint disabled via config
         if self._centroid_tree is None:
             return True  # No KD-Tree available, skip validation
 

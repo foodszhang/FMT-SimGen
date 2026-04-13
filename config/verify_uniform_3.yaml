@@ -1,0 +1,21 @@
+# Uniform source config for M1-M7 verification: 3 new samples
+_base_: default.yaml
+
+tumor:
+  organ_constraint_disabled: true
+  source_type: "uniform"
+  radius_range: [2.0, 4.0]
+  depth_distribution:
+    shallow: {range: [3.0, 5.0], weight: 0.35}
+    medium:  {range: [5.0, 7.0], weight: 0.40}
+    deep:     {range: [7.0, 9.0], weight: 0.25}
+
+dataset:
+  num_samples: 3
+  experiment_name: "verify_uniform_3"
+
+quality_filter:
+  enabled: true
+  min_b_max: 0.001
+  min_gt_nonzero_count: 20
+  max_retries: 10
