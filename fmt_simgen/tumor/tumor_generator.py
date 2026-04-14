@@ -438,8 +438,18 @@ class TumorGenerator:
         if self._centroid_tree is None:
             return True  # No KD-Tree available, skip validation
 
+        # Check radius based on source type:
+        # - Uniform: tumor is a hard sphere, check just beyond boundary (+0.5mm discretization tolerance)
+        # - Gaussian: sigma=radius, intensity drops to 0.32 at 1.5*sigma, so check 1.5*radius+0.5mm
+        source_type = self.config.get("source_type", "gaussian")
+        if source_type == "uniform":
+            cutoff = radius + 0.5
+        elif source_type == "gaussian":
+            cutoff = 1.5 * radius + 0.5
+        else:
+            cutoff = 4.0 * radius  # fallback (shouldn't reach here)
+
         # KD-Tree ball query: O(log N + k) instead of O(N)
-        cutoff = 4.0 * radius
         indices = self._centroid_tree.query_ball_point(center, cutoff)
 
         if not indices:

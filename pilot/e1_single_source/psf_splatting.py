@@ -155,7 +155,7 @@ class PSFSplattingRenderer(nn.Module):
         """
         center_cam = view_matrix @ source.center
 
-        d = center_cam[2]
+        d = torch.dot(source.center, surface_normal)
 
         if d < 0.05:
             return torch.zeros(
