@@ -5,7 +5,7 @@ Extends E1c kernels to support finite-size sources via superposition.
 """
 
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 def diffusion_params(tissue_params: dict) -> dict:
@@ -39,13 +39,15 @@ def compute_source_surface_distances(
     surface_points_mm: np.ndarray,
     source_points_mm: np.ndarray,
     z_surface: float = 10.0,
+    surface_z_values: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute distances from surface points to source points.
 
     Args:
         surface_points_mm: [N_surf, 2] or [H, W, 2] surface XY coordinates
         source_points_mm: [N_src, 3] source point positions
-        z_surface: z-coordinate of surface plane
+        z_surface: z-coordinate of surface plane (used if surface_z_values is None)
+        surface_z_values: [N_surf] actual z values at each surface point (for non-planar surface)
 
     Returns:
         r: [N_surf, N_src] total 3D distances
@@ -67,9 +69,20 @@ def compute_source_surface_distances(
     dy = surface_xy[:, :, 1] - source_xy[:, :, 1]
     rho = np.sqrt(dx**2 + dy**2)
 
-    depth = z_surface - source_points_mm[:, 2]
+    if surface_z_values is not None:
+        if surface_z_values.ndim > 1:
+            surface_z_flat = surface_z_values.reshape(-1)
+        else:
+            surface_z_flat = surface_z_values
+        depth = surface_z_flat[:, np.newaxis] - source_points_mm[np.newaxis, :, 2]
+    else:
+        depth = z_surface - source_points_mm[:, 2]
+        depth = depth[np.newaxis, :]
 
-    r = np.sqrt(rho**2 + depth[np.newaxis, :] ** 2)
+    r = np.sqrt(rho**2 + depth**2)
+
+    if surface_z_values is None:
+        depth = depth[0, :]
 
     return r, rho, depth
 
@@ -80,6 +93,7 @@ def green_infinite_finite_source(
     source_weights: np.ndarray,
     tissue_params: dict,
     z_surface: float = 10.0,
+    surface_z_values: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Infinite medium Green's function for finite-size source.
 
@@ -92,7 +106,8 @@ def green_infinite_finite_source(
         source_points_mm: [N_src, 3] sampled source point positions
         source_weights: [N_src] weight for each sample point
         tissue_params: optical properties
-        z_surface: z-coordinate of surface plane
+        z_surface: z-coordinate of surface plane (used if surface_z_values is None)
+        surface_z_values: [N_surf] actual z values at each surface point
 
     Returns:
         response: [N_surf] total surface response
@@ -102,7 +117,7 @@ def green_infinite_finite_source(
     mu_eff = diff["mu_eff"]
 
     r, _, _ = compute_source_surface_distances(
-        surface_points_mm, source_points_mm, z_surface
+        surface_points_mm, source_points_mm, z_surface, surface_z_values
     )
 
     r = np.maximum(r, 1e-6)
@@ -121,6 +136,7 @@ def green_halfspace_finite_source(
     tissue_params: dict,
     z_surface: float = 10.0,
     boundary_condition: str = "extrapolated",
+    surface_z_values: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Half-space Green's function for finite-size source.
 
@@ -133,8 +149,9 @@ def green_halfspace_finite_source(
         source_points_mm: [N_src, 3] sampled source point positions
         source_weights: [N_src] weight for each sample point
         tissue_params: optical properties
-        z_surface: z-coordinate of surface plane
+        z_surface: z-coordinate of surface plane (used if surface_z_values is None)
         boundary_condition: "extrapolated" or "zero"
+        surface_z_values: [N_surf] actual z values at each surface point
 
     Returns:
         response: [N_surf] total surface response
@@ -145,16 +162,16 @@ def green_halfspace_finite_source(
     zb = diff["zb"]
 
     r, rho, depth = compute_source_surface_distances(
-        surface_points_mm, source_points_mm, z_surface
+        surface_points_mm, source_points_mm, z_surface, surface_z_values
     )
 
     r = np.maximum(r, 1e-6)
     G1 = np.exp(-mu_eff * r) / (4 * np.pi * D * r)
 
     if boundary_condition == "extrapolated":
-        r2 = np.sqrt(rho**2 + (depth[np.newaxis, :] + 2 * zb) ** 2)
+        r2 = np.sqrt(rho**2 + (depth + 2 * zb) ** 2)
     elif boundary_condition == "zero":
-        r2 = np.sqrt(rho**2 + (2 * depth[np.newaxis, :]) ** 2)
+        r2 = np.sqrt(rho**2 + (2 * depth) ** 2)
     else:
         raise ValueError(f"Unknown boundary condition: {boundary_condition}")
 

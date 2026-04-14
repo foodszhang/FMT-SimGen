@@ -85,6 +85,37 @@ gt_configs:
     kernel: green_halfspace
     gt_sampling_level: 27-point
 
+real_surface_configs:
+  - id: R01_dorsal_shallow
+    description: Real surface test - dorsal region shallow source
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    mesh_path: output/shared/mesh.npz
+    roi_radius_mm: 30.0
+    
+  - id: R02_dorsal_deep
+    description: Real surface test - dorsal region deep source
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 6.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    mesh_path: output/shared/mesh.npz
+    roi_radius_mm: 30.0
+    
+  - id: R03_lateral
+    description: Real surface test - lateral region
+    source:
+      type: gaussian
+      center: [25.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    mesh_path: output/shared/mesh.npz
+    roi_radius_mm: 30.0
+
 ablation_configs:
   - id: ablation_sampling
     description: Compare sampling levels
