@@ -107,11 +107,12 @@ def run_projection_single(
     sample_dir: Path,
     camera: TurntableCamera,
     skip_existing: bool = True,
+    voxel_size_mm: float = 0.2,
 ) -> tuple[str, bool, str]:
     """Run projection for a single sample (for parallel execution)."""
     sample_id = sample_dir.name
     try:
-        proj_path = project_sample(sample_dir, camera, skip_existing=skip_existing)
+        proj_path = project_sample(sample_dir, camera, skip_existing=skip_existing, voxel_size_mm=voxel_size_mm)
         return sample_id, True, str(proj_path)
     except FileNotFoundError as e:
         return sample_id, False, str(e)
@@ -190,6 +191,7 @@ def main() -> None:
     shared_cfg = load_shared_config()
     view_cfg = load_view_config()
     camera = TurntableCamera(view_cfg)
+    voxel_size_mm = shared_cfg.get("mcx", {}).get("voxel_size_mm", 0.2)
 
     logger.info(
         "run_mcx_pipeline: samples_dir=%s, projection_only=%s, force_mcx=%s, max_workers=%d",
@@ -270,7 +272,7 @@ def main() -> None:
         if args.max_workers == 1:
             for sid, info in samples_needing_proj:
                 _, success, msg = run_projection_single(
-                    info["sample_dir"], camera, skip_existing=skip_existing
+                    info["sample_dir"], camera, skip_existing=skip_existing, voxel_size_mm=voxel_size_mm
                 )
                 proj_results.append((sid, success, msg))
                 status = "OK" if success else "FAIL"
@@ -283,6 +285,7 @@ def main() -> None:
                     info["sample_dir"],
                     camera,
                     skip_existing,
+                    voxel_size_mm,
                 )
                 futures[fut] = sid
             for fut in as_completed(futures):

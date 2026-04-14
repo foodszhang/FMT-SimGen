@@ -48,6 +48,7 @@ def project_volume_reference(
     camera_distance: float,
     fov_mm: float,
     detector_resolution: tuple[int, int],
+    voxel_size_mm: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reference orthographic projection (adapted from gen_mul_projection.py).
 
@@ -95,6 +96,9 @@ def project_volume_reference(
     points[:, 0] = nonzero_indices[:, 0] - nx / 2 + 0.5
     points[:, 1] = nonzero_indices[:, 1] - ny / 2 + 0.5
     points[:, 2] = nonzero_indices[:, 2] - nz / 2 + 0.5
+
+    # Voxel indices → physical coordinates (mm)
+    points *= voxel_size_mm
 
     values = volume_3d[
         nonzero_indices[:, 0], nonzero_indices[:, 1], nonzero_indices[:, 2]
@@ -178,6 +182,7 @@ def project_volume_reference_numpy(
     camera_distance: float,
     fov_mm: float,
     detector_resolution: tuple[int, int],
+    voxel_size_mm: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pure-numpy orthographic projection (no numba required).
 
@@ -225,6 +230,9 @@ def project_volume_reference_numpy(
     points = nonzero_indices.astype(np.float32) - np.array(
         [nx / 2, ny / 2, nz / 2], dtype=np.float32
     ) + 0.5
+
+    # Voxel indices → physical coordinates (mm)
+    points *= voxel_size_mm
 
     # 3. Fluence values
     values = volume_3d[
@@ -305,6 +313,7 @@ def load_jnii_volume(jnii_path: Path) -> np.ndarray:
 def project_mcx_fluence(
     fluence_xyz: np.ndarray,
     camera: TurntableCamera,
+    voxel_size_mm: float = 0.2,
 ) -> Dict[str, np.ndarray]:
     """Project MCX fluence volume to multi-angle 2D projections.
 
@@ -336,6 +345,7 @@ def project_mcx_fluence(
             camera_distance=camera.camera_distance_mm,
             fov_mm=camera.fov_mm,
             detector_resolution=camera.detector_resolution,
+            voxel_size_mm=voxel_size_mm,
         )
         results[str(angle)] = proj.astype(np.float32)
 
@@ -346,6 +356,7 @@ def project_sample(
     sample_dir: Path,
     camera: TurntableCamera,
     skip_existing: bool = True,
+    voxel_size_mm: float = 0.2,
 ) -> Path:
     """Project a single sample's MCX fluence to proj.npz.
 
@@ -380,7 +391,7 @@ def project_sample(
         return proj_path
 
     fluence = load_jnii_volume(jnii_path)
-    projections = project_mcx_fluence(fluence, camera)
+    projections = project_mcx_fluence(fluence, camera, voxel_size_mm=voxel_size_mm)
 
     for angle_str, proj in projections.items():
         if proj.sum() == 0:
