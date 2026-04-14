@@ -168,8 +168,8 @@ class PSFSplattingRenderer(nn.Module):
 
         sigma_total_sq = source.sigma**2 + sigma_psf**2
 
-        proj_x = center_cam[1]
-        proj_y = -center_cam[0]
+        proj_x = center_cam[0]
+        proj_y = center_cam[1]
 
         dx = self.grid_x - proj_x
         dy = self.grid_y - proj_y
@@ -216,7 +216,7 @@ def build_turntable_views(
         (view_matrices, surface_normals)
     """
     if angles_deg is None:
-        angles_deg = [0, 30, 60, 90, 120, 150, 180]
+        angles_deg = [-90, -60, -30, 0, 30, 60, 90]
 
     if device is None:
         device = torch.device("cpu")

@@ -24,12 +24,12 @@ psf_calibration:
     k: 0.561232
     p: 0.522703
 
-# 相机/视角配置
+# 相机/视角配置 (与 TurntableCamera 默认一致)
 camera:
   n_views: 7
-  angles_deg: [0, 30, 60, 90, 120, 150, 180]
+  angles_deg: [-90, -60, -30, 0, 30, 60, 90]  # 与 TurntableCamera 默认一致
   image_size: 256
-  pixel_size_mm: 0.1  # 必须与 MCX voxel_size 一致
+  pixel_size_mm: 0.1953125  # = 50.0 / 256, 与 TurntableCamera 默认 fov=50mm 一致
   vol_size_mm: [30, 30, 20]
 
 # MCX 参数
