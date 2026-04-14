@@ -366,13 +366,23 @@ def check_surface_overlap(
     visible_nodes = nodes[visible_surface_idx]  # [V, 3]
     V = len(visible_nodes)
 
-    # At θ=0°: camera at (0, 0, D), looking toward origin along -Z
-    # world (X, Y, Z) → cam (X, Y, Z) at θ=0° → orthographic: (X, Y) on detector
-    cam_x = visible_nodes[:, 0]  # world X
-    cam_y = visible_nodes[:, 1]  # world Y
+    # --- MCX volume center in world coordinates ---
+    # project_volume_reference places volume center at origin.
+    # We must subtract this offset so mesh world coords → MCX centered coords.
+    repo_root = Path(__file__).parent.parent
+    with open(repo_root / "config" / "default.yaml") as f:
+        cfg = yaml.safe_load(f)
+    mcx_cfg = cfg.get("mcx", {})
+    trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
+    voxel_size = mcx_cfg.get("voxel_size_mm", 0.2)
+    nx, ny, nz = mcx_cfg.get("volume_shape", [190, 200, 104])
+    volume_center_world = trunk_offset + np.array([nx, ny, nz]) * voxel_size / 2
 
-    # Map world (X, Y) to detector pixels
-    # x_phys = cam_x + fov_mm/2, then pixel = x_phys / pixel_size
+    # world → centered (same transform as project_volume_reference)
+    cam_x = visible_nodes[:, 0] - volume_center_world[0]
+    cam_y = visible_nodes[:, 1] - volume_center_world[1]
+
+    # Map centered (X, Y) to detector pixels
     u = np.round((cam_x + fov_mm / 2) / pixel_size).astype(int)
     v = np.round((cam_y + fov_mm / 2) / pixel_size).astype(int)
 
