@@ -1,0 +1,116 @@
+image_size: 256
+pixel_size_mm: 0.15
+z_surface: 10.0
+
+tissue:
+  muscle:
+    mua_mm: 0.01
+    mus_mm: 10.0
+    g: 0.9
+    n: 1.37
+  liver:
+    mua_mm: 0.02
+    mus_mm: 15.0
+    g: 0.9
+    n: 1.37
+
+rendering:
+  image_size: 256
+  pixel_size_mm: 0.15
+  z_surface: 10.0
+
+optimization:
+  n_steps: 500
+  lr_center: 0.05
+  lr_size: 0.02
+  lr_alpha: 0.02
+
+gt_configs:
+  - id: S01_point_center_shallow
+    gt_type: inverse_crime
+    source:
+      type: point
+      center: [0.0, 0.0, 7.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_level: 1-point
+    
+  - id: S02_gaussian_center_shallow
+    gt_type: inverse_crime
+    source:
+      type: gaussian
+      center: [0.0, 0.0, 7.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_level: 7-point
+    
+  - id: S03_gaussian_center_deep
+    gt_type: inverse_crime
+    source:
+      type: gaussian
+      center: [0.0, 0.0, 5.0]
+      sigmas: [1.5, 1.5, 1.5]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_level: 7-point
+    
+  - id: S04_gaussian_offset
+    gt_type: inverse_crime
+    source:
+      type: gaussian
+      center: [3.0, 4.0, 7.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_level: 7-point
+    
+  - id: S05_uniform_center
+    gt_type: inverse_crime
+    source:
+      type: uniform
+      center: [0.0, 0.0, 7.0]
+      axes: [2.0, 2.0, 2.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_level: 7-point
+
+  - id: M01_finite_gaussian_hifidel
+    gt_type: finite_source
+    source:
+      type: gaussian
+      center: [0.0, 0.0, 7.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    gt_sampling_level: 27-point
+
+ablation_configs:
+  - id: ablation_sampling
+    description: Compare sampling levels
+    source_type: gaussian
+    source_center: [0.0, 0.0, 7.0]
+    source_sigmas: [1.0, 1.0, 1.0]
+    kernel: green_halfspace
+    sampling_levels: [1-point, 7-point, 19-point, 27-point]
+    
+  - id: ablation_kernel
+    description: Compare kernel types
+    source_type: gaussian
+    source_center: [0.0, 0.0, 7.0]
+    source_sigmas: [1.0, 1.0, 1.0]
+    kernels: [gaussian_psf, green_infinite, green_halfspace]
+    
+  - id: ablation_cutoff
+    description: Compare ROI cutoff ratios
+    source_type: gaussian
+    source_center: [0.0, 0.0, 7.0]
+    source_sigmas: [1.0, 1.0, 1.0]
+    kernel: green_halfspace
+    cutoff_ratios: [0.01, 0.001, 0.0001, 0.0]
+
+decision_thresholds:
+  position_error_mm: 0.5
+  size_error_ratio: 0.2
+  alpha_error_ratio: 0.2
+  ncc_threshold: 0.95
