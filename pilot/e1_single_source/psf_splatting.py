@@ -155,24 +155,23 @@ class PSFSplattingRenderer(nn.Module):
         """
         center_cam = view_matrix @ source.center
 
-        d = torch.dot(source.center, surface_normal)
+        # 深度计算：从 +z 表面到旋转后源点的距离
+        # volume z 范围 = [-10, +10]mm (以中心为原点)
+        # surface facing camera 在 z = +10mm
+        # depth = 10.0 - rotated_z
+        surface_z = self.vol_size_mm[2] / 2.0  # +10.0 mm
+        d = surface_z - center_cam[2]
 
         # 深度应该是正的（源到表面的距离）
-        # 当 dot < 0 时，说明源在表面法向量的"背面"，但仍然可能有光发出
-        # 我们使用绝对值作为深度，但保留符号用于可见性判断
-        d_abs = torch.abs(d)
-
-        if d_abs < 0.05:
-            return torch.zeros(
-                self.image_size, self.image_size, device=center_cam.device
-            )
-
-        d_clamped = torch.clamp(d_abs, min=0.1, max=15.0)
+        # Clamp 到有效范围 [0.1, 15.0]mm
+        d_clamped = torch.clamp(d, min=0.1, max=15.0)
 
         sigma_psf, T_peak = self.compute_psf_params(d_clamped)
 
         sigma_total_sq = source.sigma**2 + sigma_psf**2
 
+        # 投影坐标：直接取旋转后的 x, y
+        # 这与 project_volume_reference 的峰值位置一致
         proj_x = center_cam[0]
         proj_y = center_cam[1]
 
@@ -230,8 +229,9 @@ def build_turntable_views(
     surface_normals = []
 
     for angle in angles_deg:
-        # 使用 -angle 以匹配 project_volume_reference 的 points @ R.T
-        theta = np.radians(-angle)
+        # 使用 +angle 以匹配 project_volume_reference 的 rotation_matrix_y(angle)
+        # 诊断数据确认：peak_mm = R_y(+angle) @ source 的 (x, y)
+        theta = np.radians(angle)
         R = torch.tensor(
             [
                 [np.cos(theta), 0, np.sin(theta)],
@@ -243,7 +243,8 @@ def build_turntable_views(
         )
 
         view_matrices.append(R)
-        normal = R @ torch.tensor([0.0, 0.0, 1.0], device=device)
+        # 表面法向量：相机从 +z 方向观察，旋转后指向相机的方向
+        normal = torch.tensor([0.0, 0.0, 1.0], device=device)
         surface_normals.append(normal)
 
     return view_matrices, surface_normals

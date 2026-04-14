@@ -24,12 +24,13 @@ psf_calibration:
     k: 0.561232
     p: 0.522703
 
-# 相机/视角配置 (与 TurntableCamera 默认一致)
+# 相机/视角配置 (与 project_volume_reference 诊断数据一致)
+# 诊断确认：fov_mm=25.6, detector_resolution=(256, 256), pixel_size_mm=0.1
 camera:
   n_views: 7
-  angles_deg: [-90, -60, -30, 0, 30, 60, 90]  # 与 TurntableCamera 默认一致
+  angles_deg: [-90, -60, -30, 0, 30, 60, 90]
   image_size: 256
-  pixel_size_mm: 0.1953125  # = 50.0 / 256, 与 TurntableCamera 默认 fov=50mm 一致
+  pixel_size_mm: 0.1  # = 25.6 / 256, 与 MCX GT 生成参数一致
   vol_size_mm: [30, 30, 20]
 
 # MCX 参数
