@@ -157,14 +157,19 @@ class PSFSplattingRenderer(nn.Module):
 
         d = torch.dot(source.center, surface_normal)
 
-        if d < 0.05:
+        # 深度应该是正的（源到表面的距离）
+        # 当 dot < 0 时，说明源在表面法向量的"背面"，但仍然可能有光发出
+        # 我们使用绝对值作为深度，但保留符号用于可见性判断
+        d_abs = torch.abs(d)
+
+        if d_abs < 0.05:
             return torch.zeros(
                 self.image_size, self.image_size, device=center_cam.device
             )
 
-        d = torch.clamp(d, min=0.1, max=15.0)
+        d_clamped = torch.clamp(d_abs, min=0.1, max=15.0)
 
-        sigma_psf, T_peak = self.compute_psf_params(d)
+        sigma_psf, T_peak = self.compute_psf_params(d_clamped)
 
         sigma_total_sq = source.sigma**2 + sigma_psf**2
 
@@ -225,7 +230,8 @@ def build_turntable_views(
     surface_normals = []
 
     for angle in angles_deg:
-        theta = np.radians(angle)
+        # 使用 -angle 以匹配 project_volume_reference 的 points @ R.T
+        theta = np.radians(-angle)
         R = torch.tensor(
             [
                 [np.cos(theta), 0, np.sin(theta)],
