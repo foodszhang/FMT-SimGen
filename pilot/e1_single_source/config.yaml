@@ -1,0 +1,107 @@
+# E1 Single-Source 3DGS Optimization Validation
+# 验证单源情况下 3DGS 参数优化的可行性
+
+# 组织光学参数 (复用 E0)
+tissue_params:
+  muscle:
+    mu_a: 0.087
+    mu_sp: 4.291
+    g: 0.90
+    n: 1.37
+
+  liver:
+    mu_a: 0.352
+    mu_sp: 6.781
+    g: 0.90
+    n: 1.37
+
+# PSF 校准参数 (从 E0 结果拟合)
+# σ_PSF(d) = k * d^p
+psf_calibration:
+  muscle:
+    k: 0.801469
+    p: 0.576760
+  liver:
+    k: 0.561232
+    p: 0.522703
+
+# 相机/视角配置
+camera:
+  n_views: 7
+  angles_deg: [0, 30, 60, 90, 120, 150, 180]
+  image_size: 256
+  pixel_size_mm: 0.15   # 38.4mm / 256 ≈ 0.15mm/pixel
+  vol_size_mm: [30, 30, 20]  # (x, y, z) mm
+
+# 优化参数
+optimization:
+  n_steps: 500
+  lr_center: 0.05       # 位置学习率 (mm/step)
+  lr_sigma: 0.02        # σ 学习率
+  lr_alpha: 0.02        # α 学习率
+  init_sigma_offset: 0.5  # 初始 σ 偏移 (GT + offset)
+  init_alpha_offset: 0.0  # 初始 α 偏移
+
+# 实验矩阵
+configs:
+  # 基础 case
+  - id: S01
+    tissue_type: muscle
+    source:
+      center: [0.0, 0.0, 2.0]  # (x, y, depth) mm
+      sigma: 1.0
+      alpha: 1.0
+    description: "Muscle, 2mm depth, σ=1mm, center"
+
+  # 小源
+  - id: S02
+    tissue_type: muscle
+    source:
+      center: [0.0, 0.0, 2.0]
+      sigma: 0.5
+      alpha: 1.0
+    description: "Muscle, 2mm depth, σ=0.5mm (small source)"
+
+  # 较深
+  - id: S03
+    tissue_type: muscle
+    source:
+      center: [0.0, 0.0, 4.0]
+      sigma: 1.0
+      alpha: 1.0
+    description: "Muscle, 4mm depth, σ=1mm (deeper)"
+
+  # 偏心位置
+  - id: S04
+    tissue_type: muscle
+    source:
+      center: [3.0, 3.0, 2.0]
+      sigma: 1.0
+      alpha: 1.0
+    description: "Muscle, 2mm depth, σ=1mm, offset (3,3)mm"
+
+  # 高吸收组织
+  - id: S05
+    tissue_type: liver
+    source:
+      center: [0.0, 0.0, 2.0]
+      sigma: 1.0
+      alpha: 1.0
+    description: "Liver, 2mm depth, σ=1mm (high absorption)"
+
+  # 初始化鲁棒性测试
+  - id: S06
+    tissue_type: muscle
+    source:
+      center: [0.0, 0.0, 2.0]
+      sigma: 1.0
+      alpha: 1.0
+    n_random_seeds: 5
+    description: "Muscle, 2mm depth, 5 random seeds"
+
+# Go/No-Go 判定阈值
+decision_thresholds:
+  position_error_mm: 0.5      # 位置误差 < 0.5mm
+  sigma_error_ratio: 0.20     # σ 误差 < 20%
+  alpha_error_ratio: 0.20     # α 误差 < 20%
+  convergence_threshold: 0.01 # 最后 50 步 loss 变化 < 1%

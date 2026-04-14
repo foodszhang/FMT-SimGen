@@ -1,0 +1,44 @@
+{
+  "source_gt": {
+    "center": [
+      0.0,
+      0.0,
+      2.0
+    ],
+    "sigma": 1.0,
+    "alpha": 1.0
+  },
+  "tissue": {
+    "mu_a": 0.087,
+    "mu_sp": 4.291,
+    "n": 1.37,
+    "D": 0.07613826709304096,
+    "mu_eff": 1.0689518230491026,
+    "z_b": 0.4484198531357402
+  },
+  "config_id": "S01",
+  "tissue_type": "muscle",
+  "camera": {
+    "n_views": 7,
+    "angles_deg": [
+      0,
+      30,
+      60,
+      90,
+      120,
+      150,
+      180
+    ],
+    "image_size": 256,
+    "pixel_size_mm": 0.15,
+    "vol_size_mm": [
+      30,
+      30,
+      20
+    ]
+  },
+  "psf_calibration": {
+    "k": 0.801469,
+    "p": 0.57676
+  }
+}

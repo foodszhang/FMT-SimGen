@@ -115,6 +115,8 @@ def project_volume_reference(
     cam_z = points[:, 2]  # world Z = depth axis
     depths = camera_distance - cam_z  # positive = in front
 
+    half_voxel_phys = voxel_size_mm / 2.0
+
     # Call numba-accelerated inner loop
     _project_points_to_detector(
         projection,
@@ -129,6 +131,7 @@ def project_volume_reference(
         height_phys,
         pixel_to_phys_x,
         pixel_to_phys_y,
+        half_voxel_phys,
     )
 
     return projection, depth_map
@@ -148,11 +151,12 @@ def _project_points_to_detector(
     height_phys: float,
     pixel_to_phys_x: float,
     pixel_to_phys_y: float,
+    half_voxel_phys: float,
 ) -> None:
     """Numba-accelerated point-to-detector projection loop.
 
-    For each non-zero voxel, maps it to the detector pixel and keeps
-    the shallowest (nearest) point.
+    For each non-zero voxel, fills all pixels it physically covers
+    (not single-point sampling), keeping the shallowest (nearest) point.
     """
     half_w = width_phys / 2
     half_h = height_phys / 2
@@ -167,13 +171,18 @@ def _project_points_to_detector(
         if depth_val < 0:
             continue
 
-        pixel_u = int((px + half_w) / pixel_to_phys_x)
-        pixel_v = int((py + half_h) / pixel_to_phys_y)
+        # Pixel range covered by this voxel (fill, not single-point sample)
+        u_start = int((px - half_voxel_phys + half_w) / pixel_to_phys_x)
+        u_end   = int((px + half_voxel_phys + half_w) / pixel_to_phys_x)
+        v_start = int((py - half_voxel_phys + half_h) / pixel_to_phys_y)
+        v_end   = int((py + half_voxel_phys + half_h) / pixel_to_phys_y)
 
-        if 0 <= pixel_u < width_pixels and 0 <= pixel_v < height_pixels:
-            if depth_val < depth_map[pixel_v, pixel_u]:
-                depth_map[pixel_v, pixel_u] = depth_val
-                projection[pixel_v, pixel_u] = values[idx]
+        for pu in range(u_start, u_end + 1):
+            for pv in range(v_start, v_end + 1):
+                if 0 <= pu < width_pixels and 0 <= pv < height_pixels:
+                    if depth_val < depth_map[pv, pu]:
+                        depth_map[pv, pu] = depth_val
+                        projection[pv, pu] = values[idx]
 
 
 def project_volume_reference_numpy(
@@ -250,41 +259,30 @@ def project_volume_reference_numpy(
     cam_z = points[:, 2]
     depths = camera_distance - cam_z  # positive = in front of detector
 
-    # 6. Pixel coordinates (fully vectorized)
-    pixel_u = ((cam_x + width_phys / 2) / pixel_to_phys_x).astype(np.int32)
-    pixel_v = ((cam_y + height_phys / 2) / pixel_to_phys_y).astype(np.int32)
+    # 6. Voxel coverage fill (same as numba version)
+    half_voxel_phys = voxel_size_mm / 2.0
 
-    # 7. Validity mask
-    valid = (
-        (pixel_u >= 0) & (pixel_u < width_pixels) &
-        (pixel_v >= 0) & (pixel_v < height_pixels) &
-        (depths > 0)
-    )
-    pixel_u = pixel_u[valid]
-    pixel_v = pixel_v[valid]
-    depths_v = depths[valid]
-    values_v = values[valid]
+    for idx in range(N):
+        px = cam_x[idx]
+        py = cam_y[idx]
+        depth_val = depths[idx]
 
-    if len(depths_v) == 0:
-        return projection, depth_map
+        if abs(px) > width_phys / 2 or abs(py) > height_phys / 2:
+            continue
+        if depth_val < 0:
+            continue
 
-    # 8. Sort by depth (shallowest first)
-    sort_idx = np.argsort(depths_v)
-    pixel_u = pixel_u[sort_idx]
-    pixel_v = pixel_v[sort_idx]
-    values_sorted = values_v[sort_idx]
-    depths_sorted = depths_v[sort_idx]
+        # Pixel range covered by this voxel
+        u_start = int((px - half_voxel_phys + width_phys / 2) / pixel_to_phys_x)
+        u_end   = int((px + half_voxel_phys + width_phys / 2) / pixel_to_phys_x)
+        v_start = int((py - half_voxel_phys + height_phys / 2) / pixel_to_phys_y)
+        v_end   = int((py + half_voxel_phys + height_phys / 2) / pixel_to_phys_y)
 
-    # 9. ravel_multi_index for flat unique pixel selection
-    flat_idx = np.ravel_multi_index(
-        (pixel_v, pixel_u), (height_pixels, width_pixels)
-    )
-    _, unique_pos = np.unique(flat_idx, return_index=True)
-
-    # 10. Assign to output arrays
-    flat_unique = flat_idx[unique_pos]
-    projection.flat[flat_unique] = values_sorted[unique_pos]
-    depth_map.flat[flat_unique] = depths_sorted[unique_pos]
+        for pu in range(max(0, u_start), min(width_pixels, u_end + 1)):
+            for pv in range(max(0, v_start), min(height_pixels, v_end + 1)):
+                if depth_val < depth_map[pv, pu]:
+                    depth_map[pv, pu] = depth_val
+                    projection[pv, pu] = values[idx]
 
     return projection, depth_map
 

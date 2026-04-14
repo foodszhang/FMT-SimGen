@@ -1,0 +1,44 @@
+{
+  "source_gt": {
+    "center": [
+      0.0,
+      0.0,
+      2.0
+    ],
+    "sigma": 1.0,
+    "alpha": 1.0
+  },
+  "tissue": {
+    "mu_a": 0.352,
+    "mu_sp": 6.781,
+    "n": 1.37,
+    "D": 0.046731155661479507,
+    "mu_eff": 2.744530560952091,
+    "z_b": 0.275225307308043
+  },
+  "config_id": "S05",
+  "tissue_type": "liver",
+  "camera": {
+    "n_views": 7,
+    "angles_deg": [
+      0,
+      30,
+      60,
+      90,
+      120,
+      150,
+      180
+    ],
+    "image_size": 256,
+    "pixel_size_mm": 0.15,
+    "vol_size_mm": [
+      30,
+      30,
+      20
+    ]
+  },
+  "psf_calibration": {
+    "k": 0.561232,
+    "p": 0.522703
+  }
+}
