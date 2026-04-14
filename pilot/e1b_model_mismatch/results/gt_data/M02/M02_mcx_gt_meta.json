@@ -1,0 +1,19 @@
+{
+  "config_id": "M02",
+  "tissue_type": "muscle",
+  "source_center_gt": [
+    0.0,
+    0.0,
+    4.0
+  ],
+  "view_angles": [
+    0,
+    30,
+    60,
+    90,
+    120,
+    150,
+    180
+  ],
+  "image_size": 256
+}

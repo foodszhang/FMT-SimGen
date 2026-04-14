@@ -1,0 +1,88 @@
+# E1b Model Mismatch Validation
+# 量化 MCX GT 与解析 PSF 前向模型的 mismatch 对优化精度的影响
+
+# 组织光学参数 (复用 E1)
+tissue_params:
+  muscle:
+    mu_a: 0.087
+    mu_sp: 4.291
+    g: 0.90
+    n: 1.37
+
+  liver:
+    mu_a: 0.352
+    mu_sp: 6.781
+    g: 0.90
+    n: 1.37
+
+# PSF 校准参数 (从 E0 结果拟合)
+psf_calibration:
+  muscle:
+    k: 0.801469
+    p: 0.576760
+  liver:
+    k: 0.561232
+    p: 0.522703
+
+# 相机/视角配置
+camera:
+  n_views: 7
+  angles_deg: [0, 30, 60, 90, 120, 150, 180]
+  image_size: 256
+  pixel_size_mm: 0.1  # 必须与 MCX voxel_size 一致
+  vol_size_mm: [30, 30, 20]
+
+# MCX 参数
+mcx:
+  n_photons: 100000000
+  voxel_size_mm: 0.1
+  vol_size_mm: [30, 30, 20]
+  mcx_exec: "/mnt/f/win-pro/bin/mcx.exe"
+
+# 优化参数 (复用 E1)
+optimization:
+  n_steps: 500
+  lr_center: 0.05
+  lr_sigma: 0.02
+  lr_alpha: 0.02
+  init_center_noise_mm: 1.0  # 初始化时的高斯噪声幅度
+
+# 实验矩阵
+# 注意：MCX 模拟点源，没有 σ 参数
+# 优化目标是看位置误差，以及 σ 是否趋近 0
+configs:
+  - id: M01
+    tissue_type: muscle
+    source_center: [0.0, 0.0, 2.0]  # (x, y, depth) mm
+    e1_config: S01
+    description: "Muscle, 2mm depth, center"
+
+  - id: M02
+    tissue_type: muscle
+    source_center: [0.0, 0.0, 4.0]
+    e1_config: S03
+    description: "Muscle, 4mm depth (deeper)"
+
+  - id: M03
+    tissue_type: muscle
+    source_center: [3.0, 3.0, 2.0]
+    e1_config: S04
+    description: "Muscle, 2mm depth, offset (3,3)mm"
+
+  - id: M04
+    tissue_type: liver
+    source_center: [0.0, 0.0, 2.0]
+    e1_config: S05
+    description: "Liver, 2mm depth, center"
+
+  - id: M05
+    tissue_type: liver
+    source_center: [0.0, 0.0, 4.0]
+    e1_config: null
+    description: "Liver, 4mm depth (deeper)"
+
+# Go/No-Go 判定阈值
+decision_thresholds:
+  position_error_mm: 0.5       # 位置误差 < 0.5mm = GO
+  position_error_caution: 1.0  # 位置误差 < 1.0mm = CAUTION
+  sigma_final_max_mm: 0.5      # 点源的 σ 应该很小

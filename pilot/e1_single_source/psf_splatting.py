@@ -155,15 +155,21 @@ class PSFSplattingRenderer(nn.Module):
         """
         center_cam = view_matrix @ source.center
 
-        d = torch.dot(source.center, surface_normal)
+        d = center_cam[2]
+
+        if d < 0.05:
+            return torch.zeros(
+                self.image_size, self.image_size, device=center_cam.device
+            )
+
         d = torch.clamp(d, min=0.1, max=15.0)
 
         sigma_psf, T_peak = self.compute_psf_params(d)
 
         sigma_total_sq = source.sigma**2 + sigma_psf**2
 
-        proj_x = center_cam[0]
-        proj_y = center_cam[1]
+        proj_x = center_cam[1]
+        proj_y = -center_cam[0]
 
         dx = self.grid_x - proj_x
         dy = self.grid_y - proj_y
@@ -231,7 +237,7 @@ def build_turntable_views(
         )
 
         view_matrices.append(R)
-        normal = R.T @ torch.tensor([0.0, 0.0, 1.0], device=device)
+        normal = R @ torch.tensor([0.0, 0.0, 1.0], device=device)
         surface_normals.append(normal)
 
     return view_matrices, surface_normals
