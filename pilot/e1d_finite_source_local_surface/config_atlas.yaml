@@ -1,0 +1,153 @@
+mesh_path: output/shared/mesh.npz
+
+tissue:
+  muscle:
+    mua_mm: 0.01
+    mus_mm: 10.0
+    g: 0.9
+    n: 1.37
+
+atlas_gt_configs:
+  - id: A1_atlas_self_consistent_shallow
+    description: Atlas self-consistent inverse - shallow source
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: A1_atlas_self_consistent_deep
+    description: Atlas self-consistent inverse - deep source
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 6.0]
+      sigmas: [1.5, 1.5, 1.5]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: A2_atlas_vs_flat_shallow
+    description: Geometry mismatch test - shallow
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: A2_atlas_vs_flat_deep
+    description: Geometry mismatch test - deep
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 6.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: A3_lateral_source
+    description: Lateral region test
+    source:
+      type: gaussian
+      center: [25.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: B1_gaussian_sr6_reference
+    description: SR-6 quadrature reference
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: mc-512
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: B1_gaussian_ut7_reference
+    description: UT-7 quadrature reference
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 10.0]
+      sigmas: [1.0, 1.0, 1.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: mc-512
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: B2_uniform_stratified_reference
+    description: Uniform stratified quadrature reference
+    source:
+      type: uniform
+      center: [17.0, 48.0, 10.0]
+      axes: [2.0, 2.0, 2.0]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: mc-512
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: C1_gaussian_to_gaussian
+    description: Gaussian GT for Gaussian inverse
+    source:
+      type: gaussian
+      center: [17.0, 48.0, 9.0]
+      sigmas: [1.2, 1.0, 0.8]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: C2_uniform_to_uniform
+    description: Uniform GT for uniform inverse
+    source:
+      type: uniform
+      center: [17.0, 48.0, 9.0]
+      axes: [1.5, 1.5, 1.5]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+  - id: C3_uniform_to_gaussian
+    description: Uniform GT for Gaussian inverse (model mismatch)
+    source:
+      type: uniform
+      center: [17.0, 48.0, 9.0]
+      axes: [1.5, 1.5, 1.5]
+      alpha: 1.0
+    kernel: green_halfspace
+    sampling_scheme: grid-27
+    geometry_mode: local_depth
+    roi_radius_mm: 30.0
+
+optimization:
+  n_steps: 500
+  lr_center: 0.05
+  lr_size: 0.02
+  lr_alpha: 0.02
+
+decision_thresholds:
+  position_error_mm: 0.5
+  size_error_ratio: 0.2
+  alpha_error_ratio: 0.2
+  ncc_threshold: 0.95
