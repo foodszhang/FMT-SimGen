@@ -136,7 +136,7 @@ def generate_mcx_multiview_gt(
         proj, depth = project_volume_reference(
             fluence,
             angle,
-            camera_distance_mm=camera.camera_distance_mm,
+            camera_distance=camera.camera_distance_mm,
             fov_mm=camera.fov_mm,
             detector_resolution=camera.detector_resolution,
             voxel_size_mm=voxel_size_mm,
