@@ -27,9 +27,9 @@ SAMPLING_SCHEMES = {
         "n_points": 33,
         "description": "Stratified uniform (center + 6 + 12 + 8 + 6)",
     },
-    "stratified-57": {
-        "n_points": 57,
-        "description": "Stratified uniform (center + 6 + 12 + 8 + 18 + 12)",
+    "stratified-71": {
+        "n_points": 71,
+        "description": "Stratified uniform (center + 18 axial + 36 edge + 16 body)",
     },
     "mc-128": {"n_points": 128, "description": "Monte Carlo 128 samples"},
     "mc-256": {"n_points": 256, "description": "Monte Carlo 256 samples"},
@@ -77,7 +77,7 @@ def sample_gaussian_ut7(
     center: np.ndarray,
     sigmas: np.ndarray,
     alpha: float,
-    kappa: float = 0.0,
+    kappa: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """UT-7: Unscented Transform sigma points for Gaussian.
 
@@ -270,14 +270,19 @@ def sample_uniform_stratified33(
     return points, weights
 
 
-def sample_uniform_stratified57(
+def sample_uniform_stratified71(
     center: np.ndarray,
     axes: np.ndarray,
     alpha: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Stratified-57: 57-point scheme for uniform ellipsoid integral.
+    """Stratified-71: 71-point scheme for uniform ellipsoid integral.
 
-    Higher accuracy version with more points at multiple radii.
+    Layout:
+        - 1 center point
+        - 3 radii × 6 axial = 18 axial points
+        - 3 radii × 12 edge = 36 edge points
+        - 2 radii × 8 body = 16 body points
+        - Total = 1 + 18 + 36 + 16 = 71
 
     Args:
         center: [3] center position
@@ -285,10 +290,11 @@ def sample_uniform_stratified57(
         alpha: total intensity
 
     Returns:
-        points: [57, 3] sample positions
-        weights: [57] volume-matched weights, sum = alpha
+        points: [71, 3] sample positions
+        weights: [71] volume-matched weights, sum = alpha
     """
-    points_norm = np.zeros((57, 3), dtype=np.float32)
+    n_points = 71
+    points_norm = np.zeros((n_points, 3), dtype=np.float32)
 
     idx = 0
 
@@ -323,15 +329,11 @@ def sample_uniform_stratified57(
 
     points = points_norm * axes + center
 
-    weights = np.ones(57, dtype=np.float32)
-    weights[0] = 0.04
-    weights[1:7] = 0.02
-    weights[7:13] = 0.022
-    weights[13:19] = 0.018
-    weights[19:31] = 0.015
-    weights[31:43] = 0.014
-    weights[43:55] = 0.012
-    weights[55:57] = 0.01
+    weights = np.ones(n_points, dtype=np.float32)
+    weights[0] = 0.03
+    weights[1:19] = 0.018
+    weights[19:55] = 0.012
+    weights[55:71] = 0.014
 
     weights = weights / weights.sum() * alpha
 
@@ -567,8 +569,8 @@ def sample_uniform(
     elif scheme == "stratified-33":
         return sample_uniform_stratified33(center, axes, alpha)
 
-    elif scheme == "stratified-57":
-        return sample_uniform_stratified57(center, axes, alpha)
+    elif scheme == "stratified-71":
+        return sample_uniform_stratified71(center, axes, alpha)
 
     elif scheme.startswith("mc-"):
         n_samples = int(scheme.split("-")[1])

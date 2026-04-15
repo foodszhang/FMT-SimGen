@@ -1,0 +1,10 @@
+Config,Tissue,Depth (mm),NCC (Green),NCC (Gauss),FWHM Ratio,Verdict
+C01,Muscle,1.5,1.000,0.998,1.082,GO
+C02,Muscle,3.0,1.000,0.999,1.052,GO
+C03,Muscle,5.0,1.000,1.000,1.038,GO
+C04,Liver,1.5,1.000,0.999,1.117,GO
+C05,Liver,3.0,1.000,1.000,1.038,GO
+C06,Liver,5.0,0.996,0.996,1.253,GO
+C07,Muscle,1.5,0.995,0.994,0.868,GO
+C08,Liver,3.0,0.998,0.997,0.977,GO
+C09,Bilayer,5.0,0.997,0.997,1.202,GO

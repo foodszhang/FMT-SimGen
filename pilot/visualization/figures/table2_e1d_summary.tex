@@ -1,0 +1,28 @@
+\begin{table*}[t]
+\centering
+\caption{E1d Atlas Surface Experiments Summary: Geometry, Quadrature, and Inverse Degradation}
+\label{tab:e1d_summary}
+\begin{tabular}{llcccc}
+\toprule
+Experiment & Setting & Pos. Error (mm) & Size Error (mm) & NCC & Verdict \\
+\midrule
+\multicolumn{6}{l}{\textit{Part A}} \\
+A1-shallow & Atlas self-consistent (shallow) & 0.497 & 0.786 & N/A & PASS \\
+A1-deep & Atlas self-consistent (deep) & 0.000e+00 & 0.000e+00 & N/A & PASS \\
+A2-shallow & Atlas GT $ightarrow$ Flat inverse (shallow) & 3.699 & N/A & 0.641 & FAIL \\
+A2-deep & Atlas GT $ightarrow$ Flat inverse (deep) & 1.618 & N/A & 0.492 & FAIL \\
+A3 & Lateral region source & 0.008 & 0.046 & N/A & PASS \\
+\midrule
+\multicolumn{6}{l}{\textit{Part B}} \\
+B1-1-point & vs MC-512 reference (1-point) & N/A & N/A & 0.995 & OK \\
+B1-sr-6 & vs MC-512 reference (sr-6) & N/A & N/A & 0.999 & GOOD \\
+B1-ut-7 & vs MC-512 reference (ut-7) & N/A & N/A & 0.999 & GOOD \\
+B1-grid-27 & vs MC-512 reference (grid-27) & N/A & N/A & 0.999 & GOOD \\
+\midrule
+\multicolumn{6}{l}{\textit{Part C}} \\
+C1 & Gaussian $ightarrow$ Gaussian & 0.510 & 0.699 & N/A & PASS \\
+C2 & Uniform $ightarrow$ Uniform & 0.590 & 0.782 & N/A & PASS \\
+C3 & Uniform $ightarrow$ Gaussian (mismatch) & 0.590 & N/A & N/A & PASS \\
+\bottomrule
+\end{tabular}
+\end{table*}

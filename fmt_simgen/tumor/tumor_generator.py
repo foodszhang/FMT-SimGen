@@ -75,8 +75,18 @@ class AnalyticFocus:
                0.0 otherwise
         """
         radius = self.params.get("radius", 1.0)
-        distances = np.linalg.norm(coords - self.center, axis=1)
-        return np.where(distances <= radius, 1.0, 0.0)
+        cutoff = radius
+
+        diff = coords - self.center
+        in_bbox = np.all(np.abs(diff) <= cutoff, axis=1)
+
+        values = np.zeros(coords.shape[0], dtype=np.float32)
+        if np.any(in_bbox):
+            subset = diff[in_bbox]
+            dist2 = np.sum(subset ** 2, axis=1)
+            mask = dist2 <= cutoff ** 2
+            values[np.where(in_bbox)[0][mask]] = 1.0
+        return values
 
     def _evaluate_sphere(self, coords: np.ndarray) -> np.ndarray:
         """Evaluate Gaussian sphere with sigma = radius, truncated at 4*sigma.
@@ -88,9 +98,17 @@ class AnalyticFocus:
         sigma = radius
         cutoff = 4.0 * sigma
 
-        distances = np.linalg.norm(coords - self.center, axis=1)
-        values = np.exp(-(distances**2) / (2.0 * sigma**2))
-        values = np.where(distances <= cutoff, values, 0.0)
+        diff = coords - self.center
+        in_bbox = np.all(np.abs(diff) <= cutoff, axis=1)
+
+        values = np.zeros(coords.shape[0], dtype=np.float32)
+        if np.any(in_bbox):
+            subset = diff[in_bbox]
+            dist2 = np.sum(subset ** 2, axis=1)
+            mask = dist2 <= cutoff ** 2
+            values[np.where(in_bbox)[0][mask]] = np.exp(
+                -dist2[mask] / (2.0 * sigma ** 2)
+            ).astype(np.float32)
         return values
 
     def _evaluate_ellipsoid(self, coords: np.ndarray) -> np.ndarray:
@@ -104,16 +122,24 @@ class AnalyticFocus:
                 self.params.get("rx", 1.0),
                 self.params.get("ry", 1.0),
                 self.params.get("rz", 1.0),
-            ]
+            ],
+            dtype=np.float32,
         )
         sigma = radii
         cutoff = 4.0 * np.max(sigma)
 
         diff = coords - self.center
-        normalized_dist = diff / sigma
-        distances = np.sqrt(np.sum(normalized_dist**2, axis=1))
-        values = np.exp(-0.5 * np.sum(normalized_dist**2, axis=1))
-        values = np.where(distances <= cutoff, values, 0.0)
+        in_bbox = np.all(np.abs(diff) <= cutoff, axis=1)
+
+        values = np.zeros(coords.shape[0], dtype=np.float32)
+        if np.any(in_bbox):
+            subset = diff[in_bbox]
+            normalized = subset / sigma
+            dist2 = np.sum(normalized ** 2, axis=1)
+            mask = dist2 <= cutoff ** 2
+            values[np.where(in_bbox)[0][mask]] = np.exp(
+                -0.5 * dist2[mask]
+            ).astype(np.float32)
         return values
 
 

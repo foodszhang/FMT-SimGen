@@ -1,0 +1,87 @@
+# E1c: Green Function Selection + Coordinate Lockdown
+
+# World coordinate bounds
+world_bounds:
+  x_mm: [-15.0, 15.0]
+  y_mm: [-15.0, 15.0]
+  z_mm: [-10.0, 10.0]
+
+# Surface plane
+surface:
+  z_world: 10.0  # dorsal top surface
+  name: "dorsal"
+
+# MCX simulation parameters
+mcx:
+  volume_size: [300, 300, 200]  # [Nx, Ny, Nz]
+  voxel_size_mm: 0.1
+  tissue:
+    mua_mm: 0.01  # absorption coefficient [1/mm]
+    mus_mm: 1.0   # scattering coefficient [1/mm]
+    g: 0.9        # anisotropy factor
+    n: 1.37       # refractive index
+  # Derived optical params (computed at runtime):
+  # D = 1 / (3 * (mua + mus * (1 - g)))
+  # mu_eff = sqrt(3 * mua * (mua + mus * (1 - g)))
+  n_sim: 20       # number of simulated photons (x 10^6)
+  seed: 42
+
+# Surface image parameters
+image:
+  size: 256
+  pixel_size_mm: 0.1
+  fov_mm: 25.6
+
+# Test configurations
+configs:
+  M01:
+    source_center: [0.0, 0.0, 2.0]  # [x_mm, y_mm, depth_from_dorsal_mm]
+    tissue_type: "muscle"
+    mua_mm: 0.01
+    mus_mm: 1.0
+    g: 0.9
+    n: 1.37
+  
+  M02:
+    source_center: [0.0, 0.0, 4.0]
+    tissue_type: "muscle"
+    mua_mm: 0.01
+    mus_mm: 1.0
+    g: 0.9
+    n: 1.37
+  
+  M03:
+    source_center: [3.0, 3.0, 2.0]
+    tissue_type: "muscle"
+    mua_mm: 0.01
+    mus_mm: 1.0
+    g: 0.9
+    n: 1.37
+  
+  M04:
+    source_center: [0.0, 0.0, 2.0]
+    tissue_type: "liver"
+    mua_mm: 0.02
+    mus_mm: 1.5
+    g: 0.9
+    n: 1.37
+  
+  M05:
+    source_center: [0.0, 0.0, 2.0]
+    tissue_type: "liver"
+    mua_mm: 0.015
+    mus_mm: 1.2
+    g: 0.85
+    n: 1.37
+
+# Calibration parameters for Gaussian kernel
+calibration:
+  gaussian:
+    sigma_mm: 2.0  # initial guess, will be optimized
+
+# Output paths
+output:
+  sanity_dir: "results/sanity"
+  gt_dir: "results/gt_surface"
+  rendered_dir: "results/rendered"
+  comparison_dir: "results/comparisons"

@@ -68,7 +68,19 @@ def main():
         "-n",
         type=int,
         default=None,
-        help="Number of samples to generate (uses config default if not specified)",
+        help="Total number of samples to generate (config default if not specified)",
+    )
+    parser.add_argument(
+        "--start_index",
+        type=int,
+        default=0,
+        help="Starting sample index (for batched subprocess runs)",
+    )
+    parser.add_argument(
+        "--end_index",
+        type=int,
+        default=None,
+        help="End sample index (exclusive). Use for batched runs to generate [start_index, end_index).",
     )
     args = parser.parse_args()
 
@@ -85,13 +97,19 @@ def main():
     print("Step 1-4: Generating dataset samples")
     print("=" * 60)
 
-    if args.num_samples is not None:
+    # Determine target: use end_index if provided, otherwise num_samples
+    if args.end_index is not None:
+        target_num = args.end_index
+        if args.num_samples is not None:
+            print(f"Generating samples {args.start_index} to {args.end_index - 1} (absolute range)...")
+    elif args.num_samples is not None:
+        target_num = args.num_samples
         print(f"Generating {args.num_samples} samples...")
     else:
-        n = config.get("dataset", {}).get("num_samples", 50)
-        print(f"Generating {n} samples (from config)...")
+        target_num = config.get("dataset", {}).get("num_samples", 50)
+        print(f"Generating {target_num} samples (from config)...")
 
-    builder.build_samples(num_samples=args.num_samples)
+    builder.build_samples(num_samples=target_num, start_index=args.start_index)
 
     print(f"\nDataset generation complete! See data/{experiment_name}/ for output.")
 

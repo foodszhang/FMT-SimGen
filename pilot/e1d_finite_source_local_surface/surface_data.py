@@ -157,33 +157,55 @@ def compute_surface_normals(
     if surface_node_indices is not None:
         global_to_surface = {idx: i for i, idx in enumerate(surface_node_indices)}
 
-        v0 = surface_coords[[global_to_surface.get(f, 0) for f in surface_faces[:, 0]]]
-        v1 = surface_coords[[global_to_surface.get(f, 0) for f in surface_faces[:, 1]]]
-        v2 = surface_coords[[global_to_surface.get(f, 0) for f in surface_faces[:, 2]]]
+        valid_faces = []
+        for face in surface_faces:
+            if all(f in global_to_surface for f in face):
+                valid_faces.append([global_to_surface[f] for f in face])
+
+        if len(valid_faces) == 0:
+            import logging
+
+            logging.warning("compute_surface_normals: No valid faces found")
+            return normals
+
+        valid_faces = np.array(valid_faces)
+        n_valid = len(valid_faces)
+        n_total = len(surface_faces)
+        import logging
+
+        logging.debug(f"compute_surface_normals: {n_valid}/{n_total} faces valid")
+
+        v0 = surface_coords[valid_faces[:, 0]]
+        v1 = surface_coords[valid_faces[:, 1]]
+        v2 = surface_coords[valid_faces[:, 2]]
+
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+
+        face_normals = np.cross(edge1, edge2)
+
+        face_areas = np.linalg.norm(face_normals, axis=1)
+        face_areas = np.maximum(face_areas, 1e-10)
+
+        face_normals_normalized = face_normals / face_areas[:, np.newaxis]
+
+        for j in range(3):
+            np.add.at(normals, valid_faces[:, j], face_normals_normalized)
     else:
         v0 = surface_coords[surface_faces[:, 0]]
         v1 = surface_coords[surface_faces[:, 1]]
         v2 = surface_coords[surface_faces[:, 2]]
 
-    edge1 = v1 - v0
-    edge2 = v2 - v0
+        edge1 = v1 - v0
+        edge2 = v2 - v0
 
-    face_normals = np.cross(edge1, edge2)
+        face_normals = np.cross(edge1, edge2)
 
-    face_areas = np.linalg.norm(face_normals, axis=1)
-    face_areas = np.maximum(face_areas, 1e-10)
+        face_areas = np.linalg.norm(face_normals, axis=1)
+        face_areas = np.maximum(face_areas, 1e-10)
 
-    face_normals_normalized = face_normals / face_areas[:, np.newaxis]
+        face_normals_normalized = face_normals / face_areas[:, np.newaxis]
 
-    if surface_node_indices is not None:
-        global_to_surface = {idx: i for i, idx in enumerate(surface_node_indices)}
-        for i in range(len(surface_faces)):
-            for j in range(3):
-                global_idx = surface_faces[i, j]
-                if global_idx in global_to_surface:
-                    surface_idx = global_to_surface[global_idx]
-                    normals[surface_idx] += face_normals_normalized[i]
-    else:
         for i in range(len(surface_faces)):
             for j in range(3):
                 node_idx = surface_faces[i, j]

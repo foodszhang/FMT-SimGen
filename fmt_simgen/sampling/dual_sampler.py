@@ -41,19 +41,19 @@ class DualSampler:
         self.nodes = nodes
         self.voxel_grid_config = voxel_grid_config
 
-        # ── Precompute voxel grid coordinates (once) ──
+        # Precompute voxel grid coordinates once (not per-sample)
         nx, ny, nz = voxel_grid_config.shape
         spacing = voxel_grid_config.spacing
         offset = voxel_grid_config.offset
-
-        grid_x = np.arange(nx) * spacing + offset[0] + spacing / 2
-        grid_y = np.arange(ny) * spacing + offset[1] + spacing / 2
-        grid_z = np.arange(nz) * spacing + offset[2] + spacing / 2
-
+        grid_x = np.arange(nx, dtype=np.float32) * np.float32(spacing) + np.float32(offset[0]) + np.float32(spacing / 2)
+        grid_y = np.arange(ny, dtype=np.float32) * np.float32(spacing) + np.float32(offset[1]) + np.float32(spacing / 2)
+        grid_z = np.arange(nz, dtype=np.float32) * np.float32(spacing) + np.float32(offset[2]) + np.float32(spacing / 2)
         gx, gy, gz = np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
-        self._voxel_coords = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+        self._voxel_coords = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]).astype(np.float32)
+        del gx, gy, gz  # free meshgrid intermediates immediately
         logger.info(
-            f"  Voxel grid: {nx}×{ny}×{nz} = {len(self._voxel_coords)} points (precomputed)"
+            f"  Voxel grid: {nx}×{ny}×{nz} = {len(self._voxel_coords)} points (precomputed float32, "
+            f"{self._voxel_coords.nbytes / 1e9:.2f} GB)"
         )
 
     def sample_to_nodes(self, tumor_sample) -> np.ndarray:
@@ -67,9 +67,9 @@ class DualSampler:
         Returns
         -------
         np.ndarray
-            Ground truth at nodes [N_n].
+            Ground truth at nodes [N_n] (float32).
         """
-        return tumor_sample.evaluate(self.nodes)
+        return tumor_sample.evaluate(self.nodes).astype(np.float32)
 
     def sample_to_voxels(self, tumor_sample) -> np.ndarray:
         """Sample tumor at voxel grid centers.
@@ -82,11 +82,11 @@ class DualSampler:
         Returns
         -------
         np.ndarray
-            Ground truth at voxels [Nx × Ny × Nz].
+            Ground truth at voxels [Nx × Ny × Nz] (float32).
         """
         nx, ny, nz = self.voxel_grid_config.shape
         values = tumor_sample.evaluate(self._voxel_coords)
-        return values.reshape(nx, ny, nz)
+        return values.reshape(nx, ny, nz).astype(np.float32)
 
     def sample_dual(self, tumor_sample) -> Dict[str, np.ndarray]:
         """Sample tumor at both FEM nodes and voxel grid.

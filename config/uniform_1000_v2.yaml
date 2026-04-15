@@ -1,0 +1,16 @@
+# 均匀源 + organ_constraint_disabled 1000 样本实验
+_base_: default.yaml
+
+tumor:
+  source_type: "uniform"   # 均匀源：肿瘤区域内 = 1，外 = 0
+  radius_range: [3.0, 5.0]  # 增大肿瘤半径，确保足够节点覆盖
+
+dataset:
+  num_samples: 1000
+  experiment_name: "uniform_1000_v2"
+
+quality_filter:
+  enabled: true
+  min_b_max: 0.001
+  min_gt_nonzero_count: 20   # gt_nodes 非零节点数下限
+  max_retries: 10            # 增加重试次数

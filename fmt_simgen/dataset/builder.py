@@ -13,6 +13,8 @@ Each sample produces:
 """
 
 import gc
+import resource
+import sys
 import numpy as np
 import json
 import random
@@ -178,18 +180,17 @@ class DatasetBuilder:
         self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
-    def build_samples(self, num_samples: Optional[int] = None) -> None:
+    def build_samples(self, num_samples: Optional[int] = None, start_index: int = 0) -> None:
         """Generate tumor samples with measurements.
 
         Parameters
         ----------
         num_samples : int, optional
             Number of samples to generate. Uses config default if None.
-
-        Returns
-        -------
-        List[SampleOutput]
-            List of generated samples.
+        start_index : int, optional
+            Starting sample index. Existing complete samples at or after
+            start_index are skipped (supports batched subprocess runs).
+            Default 0.
         """
         if num_samples is None:
             num_samples = self.dataset_config.get("num_samples", 50)
@@ -321,10 +322,27 @@ class DatasetBuilder:
         # Generate until we have exactly num_samples valid saves.
         # When organ constraint or quality filter rejects parameters, we draw
         # fresh ones rather than retrying the same (deterministically failing) slot.
-        saved_count = 0
-        plan_idx = 0  # position in samples_plan
+        saved_count = start_index
+        plan_idx = start_index  # position in samples_plan (skip already-generated plan entries)
+
+        # Required files for a complete sample
+        _required_files = ["measurement_b.npy", "gt_nodes.npy", "gt_voxels.npy", "tumor_params.json"]
 
         while saved_count < num_samples:
+            sample_dir = samples_output / f"sample_{saved_count:04d}"
+
+            # Skip existing complete samples (supports resume from partial runs)
+            if sample_dir.is_dir():
+                missing = [fn for fn in _required_files if not (sample_dir / fn).exists()]
+                if not missing:
+                    print(f"  [SKIP] sample_{saved_count:04d} already exists, skipping")
+                    saved_count += 1
+                    continue
+                # Incomplete directory: remove and regenerate
+                import shutil
+                print(f"  [REBUILD] sample_{saved_count:04d} incomplete ({missing}), removing")
+                shutil.rmtree(sample_dir)
+
             # Draw parameters: use plan until exhausted, then draw from same distribution
             if plan_idx < len(samples_plan):
                 n_foci, depth_mm, depth_tier = samples_plan[plan_idx]
@@ -336,7 +354,11 @@ class DatasetBuilder:
                 depth_mm = float(np.random.uniform(lo, hi))
                 depth_tier = tier
 
-            print(f"  Generating sample {saved_count + 1}/{num_samples}...")
+            # Memory diagnostic every sample
+            rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            print(f"  [MEM] sample {saved_count}/{num_samples} | RSS = {rss_mb:.0f} MB", flush=True)
+
+            print(f"  Generating sample {saved_count + 1}/{num_samples}...", flush=True)
 
             last_tumor_sample = None
             last_gt_nodes = None
@@ -422,7 +444,9 @@ class DatasetBuilder:
             self._save_sample(sample, samples_output, saved_count)
 
             # Validate using in-memory sample object (no disk re-read)
-            self._validate_sample(sample, self._mesh_data.nodes)
+            # Only validate first 10 samples to avoid O(n_nodes) distance computation overhead
+            if saved_count < 10:
+                self._validate_sample(sample, self._mesh_data.nodes)
 
             samples_metadata.append({
                 "id": f"sample_{saved_count:04d}",
@@ -441,6 +465,13 @@ class DatasetBuilder:
 
             del sample, last_measurement_b, last_gt_nodes, last_gt_voxels, last_tumor_sample
             gc.collect()
+
+            # Force glibc to return freed memory to OS (fights malloc fragmentation)
+            import ctypes
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
 
         print(f"Dataset saved to {experiment_output}")
 

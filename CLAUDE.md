@@ -14,19 +14,26 @@ Reference implementations: `/home/foods/pro/mcx_simulation` (P1: MCX+DE with Dig
 ## Common Commands
 
 ```bash
-# Use uv run or activate .venv — NOT system python
-uv run python scripts/01_generate_mesh.py              # Mesh + system matrix (once)
-uv run python scripts/02_generate_dataset.py -n 50    # DE channel samples
-uv run python scripts/step0f_mcx_volume.py             # MCX volume asset (once)
-uv run python scripts/step0g_view_config.py            # Camera model asset (once)
-uv run python scripts/run_all.py -n 50 --enable_mcx   # Full dual-channel (DE+MCX)
-
-# MCX channel only (on existing samples)
-uv run python scripts/run_mcx_pipeline.py \
-  --samples_dir data/gaussian_1000/samples --projection_only  # project .jnii → proj.npz
-
 # Verify imports
 uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera; print('OK')"
+
+# Asset generation (once per atlas/mesh change)
+uv run python scripts/step0b_generate_mesh.py           # Tetrahedral mesh
+uv run python scripts/step0c_fem_matrix.py              # FEM system matrix
+uv run python scripts/step0d_voxel_grid.py              # Voxel grid
+uv run python scripts/step0e_v2_full_graph_laplacian.py  # Graph Laplacian
+uv run python scripts/step0f_mcx_volume.py               # MCX trunk volume binary
+uv run python scripts/step0g_view_config.py             # TurntableCamera config
+
+# DE channel samples
+uv run python scripts/02_generate_dataset.py -n 50
+
+# Full dual-channel (DE + MCX)
+uv run python scripts/run_all.py -n 50 --enable_mcx
+
+# MCX channel only (on existing DE samples)
+uv run python scripts/run_mcx_pipeline.py \
+  --samples_dir data/gaussian_1000/samples --projection_only
 ```
 
 ## Architecture: Dual-Channel Pipeline
@@ -34,11 +41,10 @@ uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera; print(
 ### Shared assets (Step 0)
 | Step | Script | Output |
 |------|---------|--------|
-| 0a | `run_step0a_atlas.py` | Atlas analysis |
 | 0b | `step0b_generate_mesh.py` | `assets/mesh/mesh.npz` |
 | 0c | `step0c_fem_matrix.py` | `assets/mesh/system_matrix.*.npz` |
 | 0d | `step0d_voxel_grid.py` | `assets/mesh/voxel_grid.npz` |
-| 0e | `step0e_graph_laplacian.py` | Graph Laplacian for regularization |
+| 0e | `step0e_v2_full_graph_laplacian.py` | Graph Laplacian for regularization |
 | 0f | `step0f_mcx_volume.py` | `output/shared/mcx_volume_trunk.bin` (trunk-cropped atlas) |
 | 0g | `step0g_view_config.py` | `output/shared/view_config.json` (camera model) |
 
@@ -106,6 +112,21 @@ All parameters in `config/default.yaml`. MCX-specific keys:
 | `mcx_runner.py` | MCX CLI invocation, auto-detects `mcx` (GPU) vs `mcxcl` (OpenCL/CPU) |
 | `mcx_projection.py` | Orthographic projection from fluence volume to 7-angle proj.npz |
 | `view_config.py` | TurntableCamera: pose, occlusion, surface normals, project_volume |
+
+## Pilot Experiments
+
+The `pilot/` directory contains ad-hoc experimental investigations, not part of the main pipeline:
+- `pilot/e0_psf_validation/` — PSF vs MCX point-source comparison
+- `pilot/e1b_model_mismatch/` — Model-mismatch analysis
+- `pilot/e1c_green_function_selection/` — Kernel selection experiments
+- `pilot/e1d_finite_source_local_surface/` — Atlas-aware surface rendering (SR-6/UT-7 quadrature)
+- `pilot/visualization/` — Plotting scripts for experimental results
+
+## Testing
+
+This project has no formal test suite. Validation is done via:
+- `scripts/03_verify_dataset.py` — per-sample data verification
+- ad-hoc pilot scripts for experimental validation
 
 ## Code Style
 

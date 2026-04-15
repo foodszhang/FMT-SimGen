@@ -30,6 +30,8 @@ from atlas_surface_renderer import (
 from atlas_surface_renderer_torch import (
     DifferentiableAtlasForward,
     DifferentiableGaussianSourceAtlas,
+    DifferentiableUniformAtlasForward,
+    DifferentiableUniformSourceAtlas,
     render_atlas_surface_torch,
 )
 from source_quadrature import sample_gaussian, sample_uniform
@@ -184,6 +186,129 @@ def optimize_source_atlas(
     }
 
 
+def optimize_source_atlas_uniform(
+    gt_response: np.ndarray,
+    surface_coords: np.ndarray,
+    surface_z_values: np.ndarray,
+    tissue_params: dict,
+    init_center: np.ndarray,
+    init_axes: tuple,
+    init_alpha: float,
+    n_steps: int = 500,
+    lr_center: float = 0.05,
+    lr_size: float = 0.02,
+    lr_alpha: float = 0.02,
+    sampling_scheme: str = "7-point",
+    geometry_mode: str = "local_depth",
+    device: torch.device = None,
+    verbose: bool = False,
+) -> Dict:
+    """Optimize uniform source parameters to match GT response on atlas surface.
+
+    Args:
+        gt_response: [N] ground truth response
+        surface_coords: [N, 3] surface coordinates
+        surface_z_values: [N] surface Z values
+        tissue_params: optical properties
+        init_center: initial center
+        init_axes: initial axes
+        init_alpha: initial alpha
+        n_steps: optimization steps
+        lr_center: learning rate for center
+        lr_size: learning rate for size
+        lr_alpha: learning rate for alpha
+        sampling_scheme: quadrature scheme
+        geometry_mode: geometry mode
+        device: torch device
+        verbose: print progress
+
+    Returns:
+        optimization result dict
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    gt_torch = torch.tensor(gt_response, dtype=torch.float32, device=device)
+
+    forward_model = DifferentiableUniformAtlasForward(
+        surface_coords=surface_coords,
+        surface_z_values=surface_z_values,
+        tissue_params=tissue_params,
+        sampling_scheme=sampling_scheme,
+        kernel_type="green_halfspace",
+        geometry_mode=geometry_mode,
+        device=device,
+    )
+
+    source = DifferentiableUniformSourceAtlas(
+        center_init=init_center.astype(np.float32),
+        axes_init=init_axes,
+        alpha_init=init_alpha,
+        device=device,
+    )
+
+    optimizer = optim.Adam(
+        [
+            {"params": [source.center], "lr": lr_center},
+            {"params": [source.log_axes], "lr": lr_size},
+            {"params": [source.log_alpha], "lr": lr_alpha},
+        ]
+    )
+
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_steps)
+
+    loss_history = []
+    center_history = []
+    axes_history = []
+    alpha_history = []
+
+    for step in range(n_steps):
+        optimizer.zero_grad()
+
+        pred = forward_model(source.center, source.axes, source.alpha)
+
+        loss = torch.mean((pred - gt_torch) ** 2)
+
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            [source.center, source.log_axes, source.log_alpha], max_norm=1.0
+        )
+
+        optimizer.step()
+        scheduler.step()
+
+        with torch.no_grad():
+            source.center.data[0].clamp_(5.0, 30.0)
+            source.center.data[1].clamp_(20.0, 80.0)
+            source.center.data[2].clamp_(2.0, 15.0)
+            source.log_axes.data.clamp_(np.log(0.1), np.log(5.0))
+            source.log_alpha.data.clamp_(np.log(0.1), np.log(10.0))
+
+        loss_history.append(loss.item())
+        center_history.append(source.center.detach().cpu().numpy().copy())
+        axes_history.append(source.axes.detach().cpu().numpy().copy())
+        alpha_history.append(source.alpha.item())
+
+        if verbose and step % 100 == 0:
+            logger.info(
+                f"Step {step}: loss={loss.item():.6e}, "
+                f"center={source.center.detach().cpu().numpy()}, "
+                f"axes={source.axes.detach().cpu().numpy()}"
+            )
+
+    return {
+        "center_final": source.center.detach().cpu().numpy(),
+        "axes_final": source.axes.detach().cpu().numpy(),
+        "alpha_final": source.alpha.item(),
+        "loss_history": loss_history,
+        "center_history": center_history,
+        "axes_history": axes_history,
+        "alpha_history": alpha_history,
+        "final_loss": loss_history[-1],
+    }
+
+
 def run_geometry_experiment(
     gt_id: str,
     gt_dir: str,
@@ -195,8 +320,9 @@ def run_geometry_experiment(
     device: torch.device,
     output_dir: str,
     seed: Optional[int] = None,
+    inverse_source_type: Optional[str] = None,
 ) -> Dict:
-    """Run geometry experiment (A1-A3).
+    """Run geometry experiment (A1-A3, C1-C3).
 
     Args:
         gt_id: GT configuration ID
@@ -209,6 +335,7 @@ def run_geometry_experiment(
         device: torch device
         output_dir: output directory
         seed: random seed
+        inverse_source_type: "gaussian" or "uniform" (defaults to GT source type)
 
     Returns:
         result dict
@@ -228,8 +355,16 @@ def run_geometry_experiment(
         gt_meta = json.load(f)
 
     source_center = np.array(gt_meta["source_center"])
+    source_type = gt_meta.get("source_type", "gaussian")
     source_sigmas = gt_meta["source_params"].get("sigmas", [1.0, 1.0, 1.0])
+    source_axes = gt_meta["source_params"].get("axes", [1.0, 1.0, 1.0])
     source_alpha = gt_meta["source_alpha"]
+
+    # Use explicit inverse_source_type if provided, otherwise default to GT source_type
+    inverse_type = (
+        inverse_source_type if inverse_source_type is not None else source_type
+    )
+    logger.info(f"  GT source type: {source_type}, Inverse source type: {inverse_type}")
 
     if seed is not None:
         np.random.seed(seed)
@@ -247,6 +382,11 @@ def run_geometry_experiment(
     )
     init_sigmas = tuple(max(s, 0.1) for s in init_sigmas)
 
+    init_axes = tuple(
+        a * (1 + (np.random.rand() - 0.5) * 2 * offset_scale) for a in source_axes
+    )
+    init_axes = tuple(max(a, 0.1) for a in init_axes)
+
     init_alpha = source_alpha * (1 + (np.random.rand() - 0.5) * 2 * offset_scale)
     init_alpha = max(init_alpha, 0.1)
 
@@ -254,63 +394,126 @@ def run_geometry_experiment(
 
     start_time = time.time()
 
-    if inverse_surface_mode == "atlas_local_depth":
-        result = optimize_source_atlas(
-            gt_response=gt_response,
-            surface_coords=surface_coords,
-            surface_z_values=surface_coords[:, 2],
-            tissue_params=tissue_params,
-            init_center=init_center,
-            init_sigmas=init_sigmas,
-            init_alpha=init_alpha,
-            n_steps=optim_config.get("n_steps", 500),
-            lr_center=optim_config.get("lr_center", 0.05),
-            lr_size=optim_config.get("lr_size", 0.02),
-            lr_alpha=optim_config.get("lr_alpha", 0.02),
-            sampling_scheme=inverse_sampling_scheme,
-            geometry_mode="local_depth",
-            device=device,
-            verbose=True,
-        )
-    elif inverse_surface_mode == "flat":
-        z_mean = surface_coords[:, 2].mean()
-        z_at_source = surface_coords[
-            np.argmin(
-                np.linalg.norm(surface_coords[:, :2] - source_center[:2], axis=1)
-            ),
-            2,
-        ]
-        z_surface = z_at_source
-
-        from atlas_surface_renderer import render_atlas_surface_flat
-        from source_quadrature import sample_gaussian
-
-        sigmas = np.array(source_sigmas, dtype=np.float32)
-
-        response_flat = render_atlas_surface_flat(
-            source_type="gaussian",
-            source_center=source_center,
-            source_params={"sigmas": source_sigmas},
-            tissue_params=tissue_params,
-            surface_coords_mm=surface_coords,
-            z_surface=z_surface,
-            sampling_scheme=inverse_sampling_scheme,
-            kernel_type="green_halfspace",
-            source_alpha=source_alpha,
+    if inverse_type == "uniform":
+        inverse_scheme = (
+            inverse_sampling_scheme if inverse_sampling_scheme != "sr-6" else "7-point"
         )
 
-        metrics_flat_vs_gt = compute_metrics(response_flat, gt_response)
+        if inverse_surface_mode == "atlas_local_depth":
+            result = optimize_source_atlas_uniform(
+                gt_response=gt_response,
+                surface_coords=surface_coords,
+                surface_z_values=surface_coords[:, 2],
+                tissue_params=tissue_params,
+                init_center=init_center,
+                init_axes=init_axes,
+                init_alpha=init_alpha,
+                n_steps=optim_config.get("n_steps", 500),
+                lr_center=optim_config.get("lr_center", 0.05),
+                lr_size=optim_config.get("lr_size", 0.02),
+                lr_alpha=optim_config.get("lr_alpha", 0.02),
+                sampling_scheme=inverse_scheme,
+                geometry_mode="local_depth",
+                device=device,
+                verbose=True,
+            )
+        elif inverse_surface_mode == "flat":
+            z_at_source = surface_coords[
+                np.argmin(
+                    np.linalg.norm(surface_coords[:, :2] - source_center[:2], axis=1)
+                ),
+                2,
+            ]
+            z_surface = z_at_source
 
-        result = {
-            "center_final": init_center,
-            "sigmas_final": init_sigmas,
-            "alpha_final": init_alpha,
-            "flat_response": response_flat,
-            "metrics_flat_vs_gt": metrics_flat_vs_gt,
-            "z_surface_used": float(z_surface),
-        }
+            flat_z_values = np.full(len(surface_coords), z_surface, dtype=np.float32)
+
+            result = optimize_source_atlas_uniform(
+                gt_response=gt_response,
+                surface_coords=surface_coords,
+                surface_z_values=flat_z_values,
+                tissue_params=tissue_params,
+                init_center=init_center,
+                init_axes=init_axes,
+                init_alpha=init_alpha,
+                n_steps=optim_config.get("n_steps", 500),
+                lr_center=optim_config.get("lr_center", 0.05),
+                lr_size=optim_config.get("lr_size", 0.02),
+                lr_alpha=optim_config.get("lr_alpha", 0.02),
+                sampling_scheme=inverse_scheme,
+                geometry_mode="local_depth",
+                device=device,
+                verbose=True,
+            )
+            result["z_surface_used"] = float(z_surface)
+        else:
+            raise ValueError(f"Unknown inverse surface mode: {inverse_surface_mode}")
     else:
-        raise ValueError(f"Unknown inverse surface mode: {inverse_surface_mode}")
+        if inverse_surface_mode == "atlas_local_depth":
+            result = optimize_source_atlas(
+                gt_response=gt_response,
+                surface_coords=surface_coords,
+                surface_z_values=surface_coords[:, 2],
+                tissue_params=tissue_params,
+                init_center=init_center,
+                init_sigmas=init_sigmas,
+                init_alpha=init_alpha,
+                n_steps=optim_config.get("n_steps", 500),
+                lr_center=optim_config.get("lr_center", 0.05),
+                lr_size=optim_config.get("lr_size", 0.02),
+                lr_alpha=optim_config.get("lr_alpha", 0.02),
+                sampling_scheme=inverse_sampling_scheme,
+                geometry_mode="local_depth",
+                device=device,
+                verbose=True,
+            )
+        elif inverse_surface_mode == "flat":
+            z_at_source = surface_coords[
+                np.argmin(
+                    np.linalg.norm(surface_coords[:, :2] - source_center[:2], axis=1)
+                ),
+                2,
+            ]
+            z_surface = z_at_source
+
+            flat_z_values = np.full(len(surface_coords), z_surface, dtype=np.float32)
+
+            result = optimize_source_atlas(
+                gt_response=gt_response,
+                surface_coords=surface_coords,
+                surface_z_values=flat_z_values,
+                tissue_params=tissue_params,
+                init_center=init_center,
+                init_sigmas=init_sigmas,
+                init_alpha=init_alpha,
+                n_steps=optim_config.get("n_steps", 500),
+                lr_center=optim_config.get("lr_center", 0.05),
+                lr_size=optim_config.get("lr_size", 0.02),
+                lr_alpha=optim_config.get("lr_alpha", 0.02),
+                sampling_scheme=inverse_sampling_scheme,
+                geometry_mode="local_depth",
+                device=device,
+                verbose=True,
+            )
+
+            sigmas = np.array(result["sigmas_final"], dtype=np.float32)
+            response_flat = render_atlas_surface_flat(
+                source_type="gaussian",
+                source_center=result["center_final"],
+                source_params={"sigmas": sigmas.tolist()},
+                tissue_params=tissue_params,
+                surface_coords_mm=surface_coords,
+                z_surface=z_surface,
+                sampling_scheme=inverse_sampling_scheme,
+                kernel_type="green_halfspace",
+                source_alpha=result["alpha_final"],
+            )
+
+            metrics_flat_vs_gt = compute_metrics(response_flat, gt_response)
+            result["flat_vs_gt_forward_metrics"] = metrics_flat_vs_gt
+            result["z_surface_used"] = float(z_surface)
+        else:
+            raise ValueError(f"Unknown inverse surface mode: {inverse_surface_mode}")
 
     optim_time = time.time() - start_time
 
@@ -318,10 +521,18 @@ def run_geometry_experiment(
     center_gt = np.array(source_center)
     position_error = np.linalg.norm(center_pred - center_gt)
 
-    sigmas_pred = np.array(result["sigmas_final"])
-    sigmas_gt = np.array(source_sigmas)
-    size_error = np.linalg.norm(sigmas_pred - sigmas_gt)
-    size_error_ratio = size_error / (np.linalg.norm(sigmas_gt) + 1e-10)
+    # Use inverse_type to determine result keys (not source_type)
+    if inverse_type == "uniform":
+        size_pred = np.array(result["axes_final"])
+        size_gt = np.array(source_axes)
+        size_key = "axes"
+    else:
+        size_pred = np.array(result["sigmas_final"])
+        size_gt = np.array(source_sigmas)
+        size_key = "sigmas"
+
+    size_error = np.linalg.norm(size_pred - size_gt)
+    size_error_ratio = size_error / (np.linalg.norm(size_gt) + 1e-10)
 
     alpha_pred = result["alpha_final"]
     alpha_gt = source_alpha
@@ -329,6 +540,8 @@ def run_geometry_experiment(
 
     result_out = {
         "gt_id": gt_id,
+        "source_type": source_type,
+        "inverse_source_type": inverse_type,
         "inverse_surface_mode": inverse_surface_mode,
         "inverse_sampling_scheme": inverse_sampling_scheme,
         "position_error_mm": float(position_error),
@@ -337,8 +550,8 @@ def run_geometry_experiment(
         "alpha_error_ratio": float(alpha_error_ratio),
         "center_pred": center_pred.tolist(),
         "center_gt": center_gt.tolist(),
-        "sigmas_pred": sigmas_pred.tolist(),
-        "sigmas_gt": sigmas_gt.tolist(),
+        f"{size_key}_pred": size_pred.tolist(),
+        f"{size_key}_gt": size_gt.tolist(),
         "alpha_pred": float(alpha_pred),
         "alpha_gt": float(alpha_gt),
         "optim_time_s": optim_time,
@@ -526,13 +739,28 @@ def run_all_experiments(
     logger.info("=" * 60)
 
     inverse_experiments = [
-        ("C1_gaussian_to_gaussian", "atlas_local_depth", "grid-27"),
-        ("C2_uniform_to_uniform", "atlas_local_depth", "grid-27"),
-        ("C3_uniform_to_gaussian", "atlas_local_depth", "grid-27"),
+        (
+            "C1_gaussian_to_gaussian",
+            "atlas_local_depth",
+            "grid-27",
+            "gaussian",
+        ),  # Gaussian GT -> Gaussian inverse
+        (
+            "C2_uniform_to_uniform",
+            "atlas_local_depth",
+            "grid-27",
+            "uniform",
+        ),  # Uniform GT -> Uniform inverse
+        (
+            "C3_uniform_to_gaussian",
+            "atlas_local_depth",
+            "grid-27",
+            "gaussian",
+        ),  # Uniform GT -> Gaussian inverse (mismatch)
     ]
 
-    for gt_id, inverse_mode, scheme in inverse_experiments:
-        logger.info(f"\n--- {gt_id} ---")
+    for gt_id, inverse_mode, scheme, inverse_source_type in inverse_experiments:
+        logger.info(f"\n--- {gt_id} (inverse: {inverse_source_type}) ---")
 
         result = run_geometry_experiment(
             gt_id=gt_id,
@@ -541,6 +769,7 @@ def run_all_experiments(
             tissue_params=tissue_params,
             inverse_surface_mode=inverse_mode,
             inverse_sampling_scheme=scheme,
+            inverse_source_type=inverse_source_type,  # Pass explicit inverse source type
             config=config,
             device=torch_device,
             output_dir=output_dir,
