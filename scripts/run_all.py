@@ -6,11 +6,11 @@ Generates N dataset samples with DE channel (forward measurement) and optionally
 MCX channel (3D fluence simulation + multi-angle projections).
 
 Usage:
-    # DE channel only (50 samples)
+    # DE + MCX dual channel (50 samples, default)
     python scripts/run_all.py --num_samples 50
 
-    # DE + MCX dual channel (50 samples)
-    python scripts/run_all.py --num_samples 50 --enable_mcx
+    # DE channel only (no MCX)
+    python scripts/run_all.py --num_samples 50 --disable_mcx
 
     # MCX channel only (on existing DE samples)
     python scripts/run_mcx_pipeline.py --samples_dir output/samples
@@ -145,9 +145,9 @@ def main() -> None:
         help="Number of samples to generate (uses config default if not specified)",
     )
     parser.add_argument(
-        "--enable_mcx",
+        "--disable_mcx",
         action="store_true",
-        help="Also run MCX channel (simulation + projection)",
+        help="Skip MCX channel (DE only)",
     )
     parser.add_argument(
         "--mcx_projection_only",
@@ -183,9 +183,9 @@ def main() -> None:
     # Phase DE
     de_ok = run_de_pipeline(args.num_samples, str(config_path))
 
-    # Phase MCX
+    # Phase MCX (enabled by default)
     mcx_ok = True
-    if args.enable_mcx and de_ok:
+    if not args.disable_mcx and de_ok:
         mcx_ok = run_mcx_pipeline(
             samples_dir=samples_base,
             projection_only=args.mcx_projection_only,
@@ -199,12 +199,12 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("Pipeline complete (%.1fs)", elapsed)
     logger.info("  DE phase:  %s", "OK" if de_ok else "FAILED")
-    if args.enable_mcx:
+    if not args.disable_mcx:
         logger.info("  MCX phase: %s", "OK" if mcx_ok else "FAILED")
     logger.info("  Samples:   data/%s/samples/", experiment_name)
     logger.info("=" * 60)
 
-    if de_ok and (not args.enable_mcx or mcx_ok):
+    if de_ok and (args.disable_mcx or mcx_ok):
         logger.info("All phases succeeded.")
         sys.exit(0)
     else:

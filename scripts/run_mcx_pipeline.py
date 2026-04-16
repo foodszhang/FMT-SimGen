@@ -6,7 +6,7 @@ Orchestrates Steps 2m (source config) → 3m (MCX simulate) → 4m (projection)
 on existing dataset samples. Can be run independently or via run_all.py --enable_mcx.
 
 Usage:
-    # Full MCX pipeline on existing samples (simulate missing + project all)
+    # Full MCX pipeline on existing samples (auto-generates source configs if missing)
     python scripts/run_mcx_pipeline.py --samples_dir data/gaussian_1000/samples
 
     # Projection only (if .jnii files already exist)
@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fmt_simgen.mcx_projection import project_sample, load_jnii_volume
 from fmt_simgen.mcx_runner import detect_mcx_executable, run_mcx_single
+from fmt_simgen.mcx_config import generate_mcx_config
 from fmt_simgen.view_config import TurntableCamera
 
 
@@ -74,7 +75,7 @@ def discover_samples(samples_dir: Path) -> dict[str, dict]:
     -------
     dict[str, dict]
         Mapping from sample_id to dict with keys:
-        has_tumor_params, has_mcx_json, has_jnii, has_proj, sample_dir
+        has_tumor_params, has_mcx_json, has_source_bin, has_jnii, has_proj, sample_dir
     """
     samples = {}
     for d in sorted(samples_dir.glob("sample_*")):
@@ -96,11 +97,35 @@ def discover_samples(samples_dir: Path) -> dict[str, dict]:
             "sample_dir": d,
             "has_tumor_params": (d / "tumor_params.json").exists(),
             "has_mcx_json": bool(json_files),
+            "has_source_bin": (d / f"source-{sid}.bin").exists(),
             "has_jnii": bool(jnii_files),
             "has_proj": (d / "proj.npz").exists(),
             "session_id": session_id,
         }
     return samples
+
+
+def generate_sources_single(
+    sample_dir: Path,
+    sample_id: str,
+    mcx_cfg: dict,
+) -> tuple[str, bool, str]:
+    """Generate MCX JSON config and source binary for a single sample."""
+    tumor_params_path = sample_dir / "tumor_params.json"
+    if not tumor_params_path.exists():
+        return sample_id, False, "no tumor_params.json"
+    try:
+        with open(tumor_params_path, "r") as f:
+            tumor_params = json.load(f)
+        json_path = generate_mcx_config(
+            sample_id=sample_id,
+            tumor_params=tumor_params,
+            mcx_config=mcx_cfg,
+            output_dir=sample_dir,
+        )
+        return sample_id, True, json_path
+    except Exception as e:
+        return sample_id, False, str(e)
 
 
 def run_projection_single(
@@ -226,6 +251,37 @@ def main() -> None:
             sys.stderr.write(f"Error: {e}\n")
             sys.exit(1)
 
+        # Phase 2m: Generate source configs for samples missing .json or .bin
+        samples_needing_sources = [
+            (sid, info)
+            for sid, info in sample_info.items()
+            if not info["has_mcx_json"] or not info["has_source_bin"]
+        ]
+        if samples_needing_sources:
+            logger.info(
+                "Phase 2m (Source config): %d samples need MCX config", len(samples_needing_sources)
+            )
+            t0_src = time.time()
+            src_results: list[tuple[str, bool, str]] = []
+            for sid, info in samples_needing_sources:
+                _, success, msg = generate_sources_single(
+                    info["sample_dir"], sid, shared_cfg.get("mcx", {})
+                )
+                src_results.append((sid, success, msg))
+                status = "OK" if success else "FAIL"
+                logger.info("  Src %s: %s — %s", sid, status, msg)
+            elapsed_src = time.time() - t0_src
+            src_ok = sum(1 for r in src_results if r[1])
+            src_fail = sum(1 for r in src_results if not r[1])
+            logger.info(
+                "Phase 2m complete: %d succeeded, %d failed (%.1fs)",
+                src_ok,
+                src_fail,
+                elapsed_src,
+            )
+            # Refresh sample info to pick up generated configs
+            sample_info = discover_samples(samples_dir)
+
         samples_needing_mcx = [
             (sid, info)
             for sid, info in sample_info.items()
@@ -233,7 +289,7 @@ def main() -> None:
         ]
         if samples_needing_mcx:
             logger.info(
-                "Phase 1 (MCX simulation): %d samples need .jnii", len(samples_needing_mcx)
+                "Phase 3m (MCX simulation): %d samples need .jnii", len(samples_needing_mcx)
             )
             t0_mcx = time.time()
 
@@ -248,13 +304,13 @@ def main() -> None:
             mcx_ok = sum(1 for r in mcx_results if r[1])
             mcx_fail = sum(1 for r in mcx_results if not r[1])
             logger.info(
-                "Phase 1 complete: %d succeeded, %d failed (%.1fs)",
+                "Phase 3m complete: %d succeeded, %d failed (%.1fs)",
                 mcx_ok,
                 mcx_fail,
                 elapsed_mcx,
             )
         else:
-            logger.info("Phase 1 (MCX simulation): all .jnii files exist, skipping")
+            logger.info("Phase 3m (MCX simulation): all .jnii files exist, skipping")
 
     # Projection phase (Step 4m)
     samples_needing_proj = [
@@ -264,7 +320,7 @@ def main() -> None:
     ]
     if samples_needing_proj:
         logger.info(
-            "Phase 2 (Projection): %d samples need proj.npz", len(samples_needing_proj)
+            "Phase 4m (Projection): %d samples need proj.npz", len(samples_needing_proj)
         )
         t0_proj = time.time()
         proj_results: list[tuple[str, bool, str]] = []
@@ -299,13 +355,13 @@ def main() -> None:
         proj_ok = sum(1 for r in proj_results if r[1])
         proj_fail = sum(1 for r in proj_results if not r[1])
         logger.info(
-            "Phase 2 complete: %d succeeded, %d failed (%.1fs)",
+            "Phase 4m complete: %d succeeded, %d failed (%.1fs)",
             proj_ok,
             proj_fail,
             elapsed_proj,
         )
     else:
-        logger.info("Phase 2 (Projection): all proj.npz exist, skipping")
+        logger.info("Phase 4m (Projection): all proj.npz exist, skipping")
         proj_results = []
 
     # Summary statistics

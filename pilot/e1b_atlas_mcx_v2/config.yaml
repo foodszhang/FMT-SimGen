@@ -1,0 +1,31 @@
+# E1b-v2 实验配置
+
+dorsal_z_mm: 15.4
+
+source_xy: [17.0, 48.0]
+
+depths_mm: [2, 4, 6, 9, 12]
+
+tissue_params:
+  mua_mm: 0.08697
+  mus_prime_mm: 4.29071
+  g: 0.9
+  n: 1.37
+
+mcx:
+  volume_shape_zyx: [104, 200, 190]
+  voxel_size_mm: 0.2
+  n_photons: 100000000
+  trunk_offset_mm: [0, 30, 0]
+
+projection:
+  detector_resolution: [256, 256]
+  fov_mm: 50
+  camera_distance_mm: 200
+  # Exclude ±90° because shallow sources have negligible signal from side views
+  # (peak intensity ~0.01% of frontal view, leading to unstable NCC)
+  angles: [-60, -30, 0, 30, 60]
+
+thresholds:
+  ncc_go: 0.95
+  ncc_caution: 0.85

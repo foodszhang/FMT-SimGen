@@ -84,3 +84,8 @@ train/checkpoints/
 
 # Experiment results
 pilot/**/results/
+pilot/**/*.png
+*.log
+
+# Temporary debug files
+pilot/**/_tmp_*.py

@@ -4,6 +4,22 @@
 
 ---
 
+## 0. MCX 可执行文件
+
+**MCX 路径**: `/mnt/f/win-pro/bin/mcx.exe`
+
+使用方式：
+```bash
+mcx.exe -f config.json
+```
+
+在 Python 中调用：
+```python
+subprocess.run(["mcx.exe", "-f", "config.json"], cwd=work_dir)
+```
+
+---
+
 ## 1. 项目概述
 
 **FMT-SimGen** 是一个用于 FMT（荧光分子断层成像）模拟数据集生成的 Python 库。
