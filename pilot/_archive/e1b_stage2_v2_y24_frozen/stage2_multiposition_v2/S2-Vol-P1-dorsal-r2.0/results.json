@@ -1,0 +1,14 @@
+{
+  "config_id": "S2-Vol-P1-dorsal-r2.0",
+  "source_pos": [
+    -0.5999999999999996,
+    2.4,
+    5.800000000000001
+  ],
+  "source_radius_mm": 2.0,
+  "sampling_scheme": "7-point",
+  "best_angle": 0.0,
+  "ncc": 0.9689523004309688,
+  "rmse": 4064.865478515625,
+  "n_source_voxels": 536
+}

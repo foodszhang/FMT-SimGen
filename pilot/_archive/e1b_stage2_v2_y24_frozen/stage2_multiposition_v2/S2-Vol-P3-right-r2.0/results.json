@@ -1,0 +1,14 @@
+{
+  "config_id": "S2-Vol-P3-right-r2.0",
+  "source_pos": [
+    6.800000000000001,
+    2.4,
+    1.0
+  ],
+  "source_radius_mm": 2.0,
+  "sampling_scheme": "7-point",
+  "best_angle": -90.0,
+  "ncc": 0.9087272243271386,
+  "rmse": 6771.09814453125,
+  "n_source_voxels": 498
+}

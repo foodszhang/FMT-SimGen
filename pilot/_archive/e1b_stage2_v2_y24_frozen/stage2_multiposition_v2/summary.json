@@ -1,0 +1,72 @@
+[
+  {
+    "config_id": "S2-Vol-P1-dorsal-r2.0",
+    "source_pos": [
+      -0.5999999999999996,
+      2.4,
+      5.800000000000001
+    ],
+    "source_radius_mm": 2.0,
+    "sampling_scheme": "7-point",
+    "best_angle": 0.0,
+    "ncc": 0.9689523004309688,
+    "rmse": 4064.865478515625,
+    "n_source_voxels": 536
+  },
+  {
+    "config_id": "S2-Vol-P2-left-r2.0",
+    "source_pos": [
+      -8.0,
+      2.4,
+      1.0
+    ],
+    "source_radius_mm": 2.0,
+    "sampling_scheme": "7-point",
+    "best_angle": 90.0,
+    "ncc": 0.8973687646585312,
+    "rmse": 148.07005310058594,
+    "n_source_voxels": 498
+  },
+  {
+    "config_id": "S2-Vol-P3-right-r2.0",
+    "source_pos": [
+      6.800000000000001,
+      2.4,
+      1.0
+    ],
+    "source_radius_mm": 2.0,
+    "sampling_scheme": "7-point",
+    "best_angle": -90.0,
+    "ncc": 0.9087272243271386,
+    "rmse": 6771.09814453125,
+    "n_source_voxels": 498
+  },
+  {
+    "config_id": "S2-Vol-P4-dorsal-lat-r2.0",
+    "source_pos": [
+      -6.3,
+      2.4,
+      5.800000000000001
+    ],
+    "source_radius_mm": 2.0,
+    "sampling_scheme": "7-point",
+    "best_angle": -30.0,
+    "ncc": 0.9409728372426793,
+    "rmse": 2483.1572265625,
+    "n_source_voxels": 524
+  },
+  {
+    "config_id": "S2-Vol-P5-ventral-r2.0",
+    "source_pos": [
+      -0.5999999999999996,
+      2.4,
+      -3.8000000000000007
+    ],
+    "source_radius_mm": 2.0,
+    "sampling_scheme": "7-point",
+    "best_angle": 60.0,
+    "ncc": 0.23022771280643506,
+    "rmse": 0.00072388572152704,
+    "n_source_voxels": 536
+  }
+]

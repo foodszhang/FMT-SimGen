@@ -56,8 +56,8 @@ uv run python scripts/run_mcx_pipeline.py \
 | Step | Script | Module | Output |
 |------|--------|--------|--------|
 | 2m | `step2m_generate_mcx_sources.py` | `mcx_config.py` | `{id}.json` + `source-{id}.bin` |
-| 3m | `step3m_mcx_simulate.py` | `mcx_runner.py` | `{id}.jnii` (3D fluence) |
-| 4m | `step4m_mcx_projection.py` | `mcx_projection.py` | `proj.npz` (7-angle projections) |
+| 3m | `run_mcx_pipeline.py --simulation_only` | `mcx_runner.py` | `{id}.jnii` (3D fluence) |
+| 4m | `run_mcx_pipeline.py --projection_only` | `mcx_projection.py` | `proj.npz` (7-angle projections) |
 
 ### Dual-channel entry points
 - `scripts/run_all.py` — orchestrates DE + MCX with `--enable_mcx`
@@ -128,6 +128,17 @@ This project has no formal test suite. Validation is done via:
 - `scripts/03_verify_dataset.py` — per-sample data verification
 - ad-hoc pilot scripts for experimental validation
 
+## MCX Executable
+
+MCX binary: `/mnt/f/win-pro/bin/mcx.exe`. Invoke via `subprocess.run(["mcx.exe", "-f", config.json"], cwd=work_dir)`. Auto-detected by `mcx_runner.py` — uses `mcx` for GPU, `mcxcl` for CPU fallback.
+
+## Python Environment
+
+**Always** use `uv run python`, never system python or miniforge python:
+```bash
+uv run python scripts/run_all.py -n 50 --enable_mcx
+```
+
 ## Code Style
 
 - Classes: PascalCase, functions/variables: snake_case
@@ -136,3 +147,15 @@ This project has no formal test suite. Validation is done via:
 - Specific exception types (not bare `except Exception`)
 - Float division: `int(round(x))` not `int(x)` for voxel count conversion
 - See `AGENTS.md` for full style guide (imports, docstrings, data structures)
+
+## Import Verification
+
+```bash
+uv run python -c "
+from fmt_simgen import (
+    DigimouseAtlas, MeshGenerator, FEMSolver,
+    OpticalParameterManager, TumorGenerator, TumorSample,
+    AnalyticFocus, DualSampler, DatasetBuilder, TurntableCamera
+)
+print('OK')
+"

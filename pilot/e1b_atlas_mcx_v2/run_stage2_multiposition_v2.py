@@ -42,7 +42,8 @@ DEFAULT_TISSUE_PARAMS = {
 CAMERA_DISTANCE_MM = 200.0
 FOV_MM = 50.0
 DETECTOR_RESOLUTION = (256, 256)
-VOXEL_SIZE_MM = 0.2
+VOXEL_SIZE_MM = 0.4
+DOWNSAMPLE_FACTOR = 2
 
 BEST_ANGLES = {
     "P1-dorsal": 0.0,
@@ -53,8 +54,18 @@ BEST_ANGLES = {
 }
 
 
-def create_atlas_homogeneous_volume(atlas_bin_path: Path) -> np.ndarray:
-    """Load atlas and create homogeneous volume (XYZ order)."""
+def create_atlas_homogeneous_volume(
+    atlas_bin_path: Path, downsample: int = DOWNSAMPLE_FACTOR
+) -> np.ndarray:
+    """Load atlas and create homogeneous volume (XYZ order).
+
+    Parameters
+    ----------
+    atlas_bin_path : Path
+        Path to mcx_volume_trunk.bin
+    downsample : int
+        Downsample factor (default 2 for 2x speedup)
+    """
     if not atlas_bin_path.exists():
         raise FileNotFoundError(f"Atlas bin not found: {atlas_bin_path}")
 
@@ -62,6 +73,16 @@ def create_atlas_homogeneous_volume(atlas_bin_path: Path) -> np.ndarray:
     volume = volume.reshape((104, 200, 190))
     volume_xyz = volume.transpose(2, 1, 0)
     homogeneous = np.where(volume_xyz > 0, 1, 0).astype(np.uint8)
+
+    if downsample > 1:
+        from scipy import ndimage
+
+        homogeneous = ndimage.zoom(homogeneous, 1 / downsample, order=0).astype(
+            np.uint8
+        )
+        logger.info(
+            f"Downsampled by {downsample}x: {volume_xyz.shape} -> {homogeneous.shape}"
+        )
 
     n_tissue = np.sum(homogeneous > 0)
     logger.info(f"Atlas homogeneous volume: {homogeneous.shape} (XYZ)")
@@ -245,7 +266,7 @@ def write_mcx_pattern3d_config(
             "VolumeFile": volume_file_rel,
             "Dim": [int(nx), int(ny), int(nz)],
             "OriginType": 1,
-            "LengthUnit": 0.2,
+            "LengthUnit": VOXEL_SIZE_MM,
             "Media": media,
         },
         "Session": {
@@ -549,6 +570,41 @@ def run_single_position(
     return result
 
 
+def create_downsampled_volume(
+    original_path: Path, downsample: int, output_dir: Path
+) -> Path:
+    """Create downsampled volume file for MCX.
+
+    Parameters
+    ----------
+    original_path : Path
+        Path to original mcx_volume_trunk.bin
+    downsample : int
+        Downsample factor
+    output_dir : Path
+        Output directory for downsampled volume
+
+    Returns
+    -------
+    Path
+        Path to downsampled volume file
+    """
+    volume = np.fromfile(original_path, dtype=np.uint8)
+    volume = volume.reshape((104, 200, 190))
+
+    from scipy import ndimage
+
+    volume_downsampled = ndimage.zoom(volume, 1 / downsample, order=0).astype(np.uint8)
+
+    output_path = output_dir / f"mcx_volume_downsampled_{downsample}x.bin"
+    volume_downsampled.tofile(output_path)
+
+    logger.info(
+        f"Created downsampled volume: {volume_downsampled.shape} -> {output_path}"
+    )
+    return output_path
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -561,14 +617,21 @@ def main():
     atlas_bin_path = Path(
         "/home/foods/pro/FMT-SimGen/output/shared/mcx_volume_trunk.bin"
     )
-    atlas_binary_xyz = create_atlas_homogeneous_volume(atlas_bin_path)
+
+    atlas_binary_xyz = create_atlas_homogeneous_volume(
+        atlas_bin_path, DOWNSAMPLE_FACTOR
+    )
+
+    downsampled_volume_path = create_downsampled_volume(
+        atlas_bin_path, DOWNSAMPLE_FACTOR, output_base_dir
+    )
 
     material_yaml_path = Path(
         "/home/foods/pro/FMT-SimGen/output/shared/mcx_material.yaml"
     )
     volume_shape = atlas_binary_xyz.shape
 
-    volume_file_rel = str(atlas_bin_path.resolve())
+    volume_file_rel = str(downsampled_volume_path.resolve())
 
     surface_pos = get_surface_positions(atlas_binary_xyz, VOXEL_SIZE_MM)
     logger.info("Surface positions:")

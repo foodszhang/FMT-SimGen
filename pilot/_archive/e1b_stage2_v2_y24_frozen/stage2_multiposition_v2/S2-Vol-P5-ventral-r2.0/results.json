@@ -1,0 +1,14 @@
+{
+  "config_id": "S2-Vol-P5-ventral-r2.0",
+  "source_pos": [
+    -0.5999999999999996,
+    2.4,
+    -3.8000000000000007
+  ],
+  "source_radius_mm": 2.0,
+  "sampling_scheme": "7-point",
+  "best_angle": 60.0,
+  "ncc": 0.23022771280643506,
+  "rmse": 0.00072388572152704,
+  "n_source_voxels": 536
+}

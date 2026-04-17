@@ -1,0 +1,131 @@
+{
+  "Domain": {
+    "VolumeFile": "/home/foods/pro/FMT-SimGen/pilot/e1b_atlas_mcx_v2/results/stage2_multiposition_v2/mcx_volume_downsampled_2x.bin",
+    "Dim": [
+      95,
+      100,
+      52
+    ],
+    "OriginType": 1,
+    "LengthUnit": 0.4,
+    "Media": [
+      {
+        "mua": 0.0,
+        "mus": 0.0,
+        "g": 1.0,
+        "n": 1.0,
+        "tag": 0,
+        "name": "background"
+      },
+      {
+        "mua": 0.08697,
+        "mus": 42.90710000000001,
+        "g": 0.9,
+        "n": 1.37,
+        "tag": 1,
+        "name": "soft_tissue"
+      },
+      {
+        "mua": 0.04,
+        "mus": 200.00000000000006,
+        "g": 0.9,
+        "n": 1.37,
+        "tag": 2,
+        "name": "bone"
+      },
+      {
+        "mua": 0.0648,
+        "mus": 23.920000000000005,
+        "g": 0.9,
+        "n": 1.37,
+        "tag": 3,
+        "name": "brain"
+      },
+      {
+        "mua": 0.05881,
+        "mus": 42.83873333333333,
+        "g": 0.85,
+        "n": 1.37,
+        "tag": 4,
+        "name": "heart"
+      },
+      {
+        "mua": 0.01304,
+        "mus": 224.51875000000013,
+        "g": 0.92,
+        "n": 1.37,
+        "tag": 5,
+        "name": "stomach"
+      },
+      {
+        "mua": 0.06597,
+        "mus": 107.28619999999998,
+        "g": 0.85,
+        "n": 1.37,
+        "tag": 6,
+        "name": "abdominal"
+      },
+      {
+        "mua": 0.35182,
+        "mus": 67.80660000000002,
+        "g": 0.9,
+        "n": 1.37,
+        "tag": 7,
+        "name": "liver"
+      },
+      {
+        "mua": 0.06597,
+        "mus": 107.28619999999998,
+        "g": 0.85,
+        "n": 1.37,
+        "tag": 8,
+        "name": "kidney"
+      },
+      {
+        "mua": 0.19639,
+        "mus": 608.6888333333328,
+        "g": 0.94,
+        "n": 1.37,
+        "tag": 9,
+        "name": "lung"
+      }
+    ]
+  },
+  "Session": {
+    "Photons": 100000000,
+    "RNGSeed": 42,
+    "ID": "S2-Vol-P4-dorsal-lat-r2.0"
+  },
+  "Forward": {
+    "T0": 0.0,
+    "T1": 5e-08,
+    "DT": 5e-08
+  },
+  "Optode": {
+    "Source": {
+      "Pos": [
+        24,
+        49,
+        33
+      ],
+      "Dir": [
+        0,
+        0,
+        1,
+        "_NaN_"
+      ],
+      "Type": "pattern3d",
+      "Pattern": {
+        "Nx": 15,
+        "Ny": 14,
+        "Nz": 15,
+        "Data": "source-S2-Vol-P4-dorsal-lat-r2.0.bin"
+      },
+      "Param1": [
+        15,
+        14,
+        15
+      ]
+    }
+  }
+}
