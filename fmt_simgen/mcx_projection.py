@@ -359,15 +359,16 @@ def project_mcx_fluence(
     Returns
     -------
     Dict[str, np.ndarray]
-        Mapping from angle string to projection image [H×W].
-        Keys: "-90", "-60", "-30", "0", "30", "60", "90"
+        Mapping from angle string to projection/depth data.
+        Projection keys: "-90", "-60", "-30", "0", "30", "60", "90" → [H×W] float32
+        Depth keys: "depth_-90", "depth_-60", ... → [H×W] float32 (depth in mm, inf if no hit)
     """
     if fluence_xyz.sum() == 0:
         logger.warning("Fluence volume is all-zero")
 
     results: Dict[str, np.ndarray] = {}
     for angle in camera.angles:
-        proj, _ = project_volume_reference(
+        proj, depth = project_volume_reference(
             fluence_xyz,
             angle,
             camera_distance=camera.camera_distance_mm,
@@ -376,7 +377,9 @@ def project_mcx_fluence(
             voxel_size_mm=voxel_size_mm,
             volume_center_world=volume_center_world,
         )
-        results[str(angle)] = proj.astype(np.float32)
+        angle_str = str(angle)
+        results[angle_str] = proj.astype(np.float32)
+        results[f"depth_{angle_str}"] = depth.astype(np.float32)
 
     return results
 
@@ -407,6 +410,7 @@ def project_sample(
     -------
     Path
         Path to the generated proj.npz file.
+        Contains angle keys ("-90", ..., "90") and depth keys ("depth_-90", ..., "depth_90").
 
     Raises
     ------
