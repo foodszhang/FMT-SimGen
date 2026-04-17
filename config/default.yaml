@@ -225,7 +225,7 @@ view_config:
   platform_occlusion: true
 
   # 视野范围 (mm, 覆盖鼠体最大截面)
-  fov_mm: 50
+  fov_mm: 80
 
   # 平台遮挡 Z 中心 (mm, 约等于鼠体高度一半)
   # 鼠体 Z 范围 [1.6, 20]，平台在腹侧 (prone) 或背侧 (supine)
