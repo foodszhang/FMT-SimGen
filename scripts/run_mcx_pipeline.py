@@ -236,7 +236,7 @@ def main() -> None:
     # trunk center). The trunk_offset IS the centering shift.
     mcx_cfg = shared_cfg.get("mcx", {})
     trunk_offset_y = mcx_cfg.get("trunk_offset_mm", [0, 30, 0])[1]
-    volume_center_world = (0.0, float(trunk_offset_y), 0.0)
+    volume_center_world = (0.0, 0.0, 0.0)
 
     logger.info(
         "run_mcx_pipeline: samples_dir=%s, projection_only=%s, force_mcx=%s, max_workers=%d",
