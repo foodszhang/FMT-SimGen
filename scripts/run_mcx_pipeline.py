@@ -133,11 +133,17 @@ def run_projection_single(
     camera: TurntableCamera,
     skip_existing: bool = True,
     voxel_size_mm: float = 0.2,
+    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[str, bool, str]:
     """Run projection for a single sample (for parallel execution)."""
     sample_id = sample_dir.name
     try:
-        proj_path = project_sample(sample_dir, camera, skip_existing=skip_existing, voxel_size_mm=voxel_size_mm)
+        proj_path = project_sample(
+            sample_dir, camera,
+            skip_existing=skip_existing,
+            voxel_size_mm=voxel_size_mm,
+            volume_center_world=volume_center_world,
+        )
         return sample_id, True, str(proj_path)
     except FileNotFoundError as e:
         return sample_id, False, str(e)
@@ -218,6 +224,20 @@ def main() -> None:
     camera = TurntableCamera(view_cfg)
     voxel_size_mm = shared_cfg.get("mcx", {}).get("voxel_size_mm", 0.2)
 
+    # Compute MCX trunk volume center in world coordinates (mm)
+    # The reference projection centers at (nx/2, ny/2, nz/2) in voxel space,
+    # converts to world mm, then SUBTRACTS volume_center_world.
+    # The trunk_offset_mm=[0, 30, 0] shifts the Y center by 30mm.
+    # X and Z are centered at 0 in the atlas, so cx=cz=0.
+    # Y: center = (200/2)*0.2 + 30 = 50.0mm, but we subtract the center
+    #    so that world Y is centered at 0 for projection.
+    # The working centering that produced valid projections was (0, 30, 0),
+    # which means the centering is relative to the ATLAS center (not the
+    # trunk center). The trunk_offset IS the centering shift.
+    mcx_cfg = shared_cfg.get("mcx", {})
+    trunk_offset_y = mcx_cfg.get("trunk_offset_mm", [0, 30, 0])[1]
+    volume_center_world = (0.0, float(trunk_offset_y), 0.0)
+
     logger.info(
         "run_mcx_pipeline: samples_dir=%s, projection_only=%s, force_mcx=%s, max_workers=%d",
         samples_dir,
@@ -232,6 +252,10 @@ def main() -> None:
         camera.fov_mm,
         camera.detector_resolution,
         camera.angles,
+    )
+    logger.info(
+        "  MCX volume center world: (%.2f, %.2f, %.2f) mm",
+        volume_center_world[0], volume_center_world[1], volume_center_world[2],
     )
 
     # Discover samples
@@ -316,7 +340,7 @@ def main() -> None:
     samples_needing_proj = [
         (sid, info)
         for sid, info in sample_info.items()
-        if not info["has_proj"] or not args.skip_existing
+        if not info["has_proj"] or not skip_existing
     ]
     if samples_needing_proj:
         logger.info(
@@ -328,7 +352,10 @@ def main() -> None:
         if args.max_workers == 1:
             for sid, info in samples_needing_proj:
                 _, success, msg = run_projection_single(
-                    info["sample_dir"], camera, skip_existing=skip_existing, voxel_size_mm=voxel_size_mm
+                    info["sample_dir"], camera,
+                    skip_existing=skip_existing,
+                    voxel_size_mm=voxel_size_mm,
+                    volume_center_world=volume_center_world,
                 )
                 proj_results.append((sid, success, msg))
                 status = "OK" if success else "FAIL"
@@ -342,6 +369,7 @@ def main() -> None:
                     camera,
                     skip_existing,
                     voxel_size_mm,
+                    volume_center_world,
                 )
                 futures[fut] = sid
             for fut in as_completed(futures):

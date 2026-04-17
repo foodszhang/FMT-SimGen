@@ -10,6 +10,7 @@ import logging
 from typing import Tuple
 
 import numpy as np
+from numba import njit, prange
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,69 @@ def rotation_matrix_y(angle_deg: float) -> np.ndarray:
             [-sin_a, 0, cos_a],
         ]
     )
+
+
+@njit(cache=True, fastmath=True)
+def _project_voxels_to_surface_numba(
+    cam_x: np.ndarray,
+    cam_y: np.ndarray,
+    depths: np.ndarray,
+    original_coords: np.ndarray,
+    width: int,
+    height: int,
+    half_w: float,
+    half_h: float,
+    px_size_x: float,
+    px_size_y: float,
+    half_voxel: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Numba-accelerated voxel-to-surface projection.
+
+    For each voxel, fills all detector pixels it covers, keeping the shallowest.
+
+    Returns
+    -------
+    surface_coords : np.ndarray
+        (H, W, 3) array of surface voxel coordinates in mm.
+    depth_map : np.ndarray
+        (H, W) depth map.
+    """
+    surface_coords = np.zeros((height, width, 3), dtype=np.float32)
+    depth_map = np.full((height, width), np.inf, dtype=np.float32)
+
+    n_voxels = len(cam_x)
+
+    for idx in range(n_voxels):
+        px = cam_x[idx]
+        py = cam_y[idx]
+        d = depths[idx]
+
+        # Check if within FOV and in front of camera
+        if abs(px) > half_w or abs(py) > half_h or d < 0:
+            continue
+
+        # Calculate pixel range covered by this voxel's physical extent
+        u_start = int((px - half_voxel + half_w) / px_size_x)
+        u_end = int((px + half_voxel + half_w) / px_size_x)
+        v_start = int((py - half_voxel + half_h) / px_size_y)
+        v_end = int((py + half_voxel + half_h) / px_size_y)
+
+        # Clamp to valid range
+        u_start = max(0, u_start)
+        u_end = min(width - 1, u_end)
+        v_start = max(0, v_start)
+        v_end = min(height - 1, v_end)
+
+        # Fill all pixels covered by this voxel
+        for pu in range(u_start, u_end + 1):
+            for pv in range(v_start, v_end + 1):
+                if d < depth_map[pv, pu]:
+                    depth_map[pv, pu] = d
+                    surface_coords[pv, pu, 0] = original_coords[idx, 0]
+                    surface_coords[pv, pu, 1] = original_coords[idx, 1]
+                    surface_coords[pv, pu, 2] = original_coords[idx, 2]
+
+    return surface_coords, depth_map
 
 
 def project_get_surface_coords(
@@ -101,46 +165,28 @@ def project_get_surface_coords(
     px_size_x = fov_mm / width
     px_size_y = fov_mm / height
 
-    # Output arrays
-    surface_coords = np.zeros((height, width, 3), dtype=np.float32)
-    depth_map = np.full((height, width), np.inf, dtype=np.float32)
-
-    # Project each voxel, keeping the shallowest (smallest depth)
-    # Use voxel coverage filling to avoid sampling gaps
-    # (voxel_size_mm > pixel_size can cause gaps with single-point sampling)
+    # Use numba-accelerated projection
     half_voxel = voxel_size_mm / 2
 
-    for idx in range(len(cam_x)):
-        px, py = cam_x[idx], cam_y[idx]
-        d = depths[idx]
-
-        # Check if within FOV and in front of camera
-        if abs(px) > half_w or abs(py) > half_h or d < 0:
-            continue
-
-        # Calculate pixel range covered by this voxel's physical extent
-        u_start = int((px - half_voxel + half_w) / px_size_x)
-        u_end = int((px + half_voxel + half_w) / px_size_x)
-        v_start = int((py - half_voxel + half_h) / px_size_y)
-        v_end = int((py + half_voxel + half_h) / px_size_y)
-
-        # Clamp to valid range
-        u_start = max(0, u_start)
-        u_end = min(width - 1, u_end)
-        v_start = max(0, v_start)
-        v_end = min(height - 1, v_end)
-
-        # Fill all pixels covered by this voxel
-        for pu in range(u_start, u_end + 1):
-            for pv in range(v_start, v_end + 1):
-                if d < depth_map[pv, pu]:
-                    depth_map[pv, pu] = d
-                    # Store ORIGINAL coordinate (before rotation) for Green's function
-                    surface_coords[pv, pu] = original_coords[idx]
+    surface_coords, depth_map = _project_voxels_to_surface_numba(
+        cam_x.astype(np.float32),
+        cam_y.astype(np.float32),
+        depths.astype(np.float32),
+        original_coords.astype(np.float32),
+        width,
+        height,
+        half_w,
+        half_h,
+        px_size_x,
+        px_size_y,
+        half_voxel,
+    )
 
     valid_mask = depth_map < np.inf
     n_valid = np.sum(valid_mask)
-    logger.debug(f"Angle {angle_deg}°: {n_valid}/{width * height} valid surface pixels")
+    logger.debug(
+        "Angle %s°: %d/%d valid surface pixels", angle_deg, n_valid, width * height
+    )
 
     return surface_coords, valid_mask
 

@@ -7,8 +7,11 @@ projections (proj.npz) using the reference's proven projection algorithm.
 Coordinate system:
 - MCX volume is stored in ZYX order (shape: Z×Y×X = 104×200×190)
 - JNII → XYZ: transpose(2, 1, 0) → shape (X=190, Y=200, Z=104)
-- Reference projection places volume center at world origin, camera at [0,0,D]
-  looking toward origin along -Z, with rotation around Y axis.
+- Projection places volume center at world origin by default.
+  The volume_center_world parameter shifts this to the correct atlas position.
+  For MCX trunk volume (after 2× downsample): volume_center_world=(19.0, 50.0, 10.4)
+  meaning the volume center voxel [95, 100, 52] corresponds to world (X=19mm, Y=50mm, Z=10.4mm).
+- Camera at [0, 0, D] looking toward origin along -Z, with rotation around Y axis.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ def project_volume_reference(
     fov_mm: float,
     detector_resolution: tuple[int, int],
     voxel_size_mm: float = 0.2,
+    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reference orthographic projection (adapted from gen_mul_projection.py).
 
@@ -67,6 +71,10 @@ def project_volume_reference(
         Field of view in mm (square detector).
     detector_resolution : tuple
         (width, height) in pixels.
+    volume_center_world : tuple[float, float, float]
+        World coordinate (X, Y, Z) of the volume center in mm.
+        Default (0,0,0) places volume center at world origin.
+        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
 
     Returns
     -------
@@ -99,6 +107,12 @@ def project_volume_reference(
 
     # Voxel indices → physical coordinates (mm)
     points *= voxel_size_mm
+
+    # Shift to place volume center at volume_center_world
+    cx, cy, cz = volume_center_world
+    points[:, 0] -= cx
+    points[:, 1] -= cy
+    points[:, 2] -= cz
 
     values = volume_3d[
         nonzero_indices[:, 0], nonzero_indices[:, 1], nonzero_indices[:, 2]
@@ -192,6 +206,7 @@ def project_volume_reference_numpy(
     fov_mm: float,
     detector_resolution: tuple[int, int],
     voxel_size_mm: float = 0.2,
+    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pure-numpy orthographic projection (no numba required).
 
@@ -210,6 +225,10 @@ def project_volume_reference_numpy(
         Field of view in mm (square detector).
     detector_resolution : tuple
         (width, height) in pixels.
+    volume_center_world : tuple[float, float, float]
+        World coordinate (X, Y, Z) of the volume center in mm.
+        Default (0,0,0) places volume center at world origin.
+        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
 
     Returns
     -------
@@ -242,6 +261,12 @@ def project_volume_reference_numpy(
 
     # Voxel indices → physical coordinates (mm)
     points *= voxel_size_mm
+
+    # Shift to place volume center at volume_center_world
+    cx, cy, cz = volume_center_world
+    points[:, 0] -= cx
+    points[:, 1] -= cy
+    points[:, 2] -= cz
 
     # 3. Fluence values
     values = volume_3d[
@@ -312,6 +337,7 @@ def project_mcx_fluence(
     fluence_xyz: np.ndarray,
     camera: TurntableCamera,
     voxel_size_mm: float = 0.2,
+    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> Dict[str, np.ndarray]:
     """Project MCX fluence volume to multi-angle 2D projections.
 
@@ -325,6 +351,10 @@ def project_mcx_fluence(
         3D fluence volume in XYZ order [X×Y×Z].
     camera : TurntableCamera
         Camera model with configured angles and detector parameters.
+    volume_center_world : tuple[float, float, float]
+        World coordinate (X, Y, Z) of the volume center in mm.
+        Default (0,0,0) places volume center at world origin.
+        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
 
     Returns
     -------
@@ -344,6 +374,7 @@ def project_mcx_fluence(
             fov_mm=camera.fov_mm,
             detector_resolution=camera.detector_resolution,
             voxel_size_mm=voxel_size_mm,
+            volume_center_world=volume_center_world,
         )
         results[str(angle)] = proj.astype(np.float32)
 
@@ -355,6 +386,7 @@ def project_sample(
     camera: TurntableCamera,
     skip_existing: bool = True,
     voxel_size_mm: float = 0.2,
+    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> Path:
     """Project a single sample's MCX fluence to proj.npz.
 
@@ -366,6 +398,10 @@ def project_sample(
         Camera model for projection.
     skip_existing : bool
         If True (default), skip samples with existing proj.npz.
+    volume_center_world : tuple[float, float, float]
+        World coordinate (X, Y, Z) of the volume center in mm.
+        Default (0,0,0) places volume center at world origin.
+        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
 
     Returns
     -------
@@ -389,7 +425,11 @@ def project_sample(
         return proj_path
 
     fluence = load_jnii_volume(jnii_path)
-    projections = project_mcx_fluence(fluence, camera, voxel_size_mm=voxel_size_mm)
+    projections = project_mcx_fluence(
+        fluence, camera,
+        voxel_size_mm=voxel_size_mm,
+        volume_center_world=volume_center_world,
+    )
 
     for angle_str, proj in projections.items():
         if proj.sum() == 0:
