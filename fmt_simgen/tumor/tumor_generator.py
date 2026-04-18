@@ -184,7 +184,8 @@ class TumorSample:
             "source_type": self.foci[0].params.get("source_type", "gaussian") if self.foci else "gaussian",
             "foci": [
                 {
-                    "center": focus.center.tolist(),
+                    "center": list(focus.center),  # trunk-local mm ← 主字段
+                    "center_atlas_mm": list(focus.center_atlas_mm),  # 调试用
                     "shape": focus.shape.value,
                     "params": focus.params,
                     # Stage 2 voxel generation needs:
@@ -210,6 +211,8 @@ class TumorGenerator:
         tissue_labels=None,
         elements=None,
         organ_constraint_disabled: bool = False,
+        trunk_offset_mm=None,  # ← NEW
+        mcx_bbox_mm=None,  # ← NEW: (min_xyz, max_xyz) tuple of np.ndarray
     ):
         """Initialize tumor generator.
 
@@ -241,6 +244,12 @@ class TumorGenerator:
         organ_constraint_disabled : bool, optional
             If True, skip organ boundary constraint check (use for verification
             datasets where the constraint is too restrictive for the mesh).
+        trunk_offset_mm : array-like, optional
+            [FIX v3] Offset from atlas-corner to trunk-local world frame [0,30,0].
+            Used to convert foci.center from atlas mm to trunk-local mm.
+        mcx_bbox_mm : tuple, optional
+            [FIX v3] (min_xyz, max_xyz) tuple of MCX volume bbox in trunk-local mm.
+            Used to reject tumors outside MCX volume.
         """
         self.config = config
         self.atlas = atlas
@@ -249,6 +258,11 @@ class TumorGenerator:
         self.tissue_labels = tissue_labels
         self.elements = elements
         self._organ_constraint_disabled = organ_constraint_disabled
+        self.trunk_offset_mm = (
+            np.asarray(trunk_offset_mm, dtype=np.float64)
+            if trunk_offset_mm is not None else np.zeros(3)
+        )
+        self.mcx_bbox_mm = mcx_bbox_mm  # 用来拒绝落在 MCX volume 外的 tumor
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -431,6 +445,21 @@ class TumorGenerator:
         sample._depth_tier = depth_tier
         sample._depth_mm = depth_mm
         sample._organ_constraint_passed = organ_constraint_passed
+
+        # [FIX v3] atlas-corner mm → mcx_trunk_local_mm
+        for focus in sample.foci:
+            focus.center_atlas_mm = np.asarray(focus.center, dtype=np.float64).copy()
+            focus.center = (focus.center_atlas_mm - self.trunk_offset_mm).tolist()
+
+        # 拒绝落在 MCX volume 外（加 1mm margin）
+        if self.mcx_bbox_mm is not None:
+            lo, hi = self.mcx_bbox_mm
+            for focus in sample.foci:
+                c = np.asarray(focus.center)
+                if np.any(c < lo - 1.0) or np.any(c > hi + 1.0):
+                    sample._organ_constraint_passed = False
+                    break
+
         return sample
 
     def is_valid_placement(self, center: np.ndarray, radius: float) -> bool:

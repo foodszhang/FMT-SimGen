@@ -180,6 +180,59 @@ class DatasetBuilder:
         self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
+    def _write_frame_manifest(self, mesh_path: Path) -> None:
+        """Write frame_manifest.json with authoritative frame metadata.
+
+        NOTE: mesh.npz 在磁盘上仍为 atlas-frame（不覆盖）；DU2Vox bridge/precomputed
+        使用 in-memory trunk-local nodes 计算的 roi_bbox_mm。两份文件各守各的 frame。
+        """
+        mcx_cfg = self.config.get("mcx", {})
+        trunk_offset = list(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
+        vs_zyx = mcx_cfg.get("volume_shape", [104, 200, 190])
+        vx = float(mcx_cfg.get("voxel_size_mm", 0.2))
+        bbox_max = [vs_zyx[2] * vx, vs_zyx[1] * vx, vs_zyx[0] * vx]
+
+        # 当前 self._mesh_data.nodes 是 trunk-local（build_samples 已做 in-place rebase）
+        nodes_trunk = self._mesh_data.nodes.astype(np.float64)
+
+        # 磁盘上的 mesh.npz 仍是 atlas-frame，记录实际状态
+        nodes_atlas = nodes_trunk + np.array(trunk_offset)
+
+        voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
+        roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
+        roi_center = np.array(bbox_max) / 2
+        offset = (roi_center - roi_size / 2).tolist()
+        shape_gt = [int(np.ceil(roi_size / voxel_spacing))] * 3
+
+        manifest = {
+            "version": 1,
+            "world_frame": "mcx_trunk_local_mm",
+            "atlas_to_world_offset_mm": trunk_offset,
+            "mcx_volume": {
+                "shape_xyz": [vs_zyx[2], vs_zyx[1], vs_zyx[0]],
+                "voxel_size_mm": vx,
+                "bbox_world_mm": {"min": [0, 0, 0], "max": bbox_max},
+            },
+            "fem_mesh": {
+                "file": "mesh.npz",
+                "frame": "atlas_corner_mm",  # 磁盘仍是 atlas frame
+                "n_nodes": int(nodes_trunk.shape[0]),
+                "bbox_world_mm": {
+                    "min": nodes_atlas.min(0).tolist(),
+                    "max": nodes_atlas.max(0).tolist(),
+                },
+            },
+            "voxel_grid_gt": {
+                "shape": shape_gt,
+                "spacing_mm": voxel_spacing,
+                "offset_world_mm": offset,
+                "frame": "mcx_trunk_local_mm",
+            },
+        }
+        with open(mesh_path / "frame_manifest.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"[FRAME] Wrote {mesh_path / 'frame_manifest.json'}")
+
     def build_samples(self, num_samples: Optional[int] = None, start_index: int = 0) -> None:
         """Generate tumor samples with measurements.
 
@@ -197,8 +250,8 @@ class DatasetBuilder:
 
         self._ensure_setup()
 
-        voxel_spacing = self.dataset_config.get("voxel_spacing", 0.1)
-        roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 40.0)
+        voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
+        roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
 
         # Experiment-isolated output: data/{experiment_name}/samples/
         experiment_name = self.dataset_config.get("experiment_name", "default")
@@ -208,38 +261,77 @@ class DatasetBuilder:
 
         samples_output.mkdir(parents=True, exist_ok=True)
 
-        mesh_center = self._mesh_data.nodes.mean(axis=0)
+        # ================== [FIX v3] 统一到 mcx_trunk_local_mm frame ==================
+        # 1) 读 MCX frame 元数据
+        mcx_cfg = self.config.get("mcx", {})
+        if not mcx_cfg:
+            raise ValueError("[FIX v3] config.mcx 必填 — frame 对齐依赖它")
+        trunk_offset_atlas = np.array(mcx_cfg["trunk_offset_mm"], dtype=np.float64)  # [0,30,0]
+        trunk_voxel_size = float(mcx_cfg["voxel_size_mm"])  # 0.2
+        # volume_shape 是 ZYX 顺序
+        vs_zyx = mcx_cfg["volume_shape"]
+        trunk_size_mm = np.array(
+            [vs_zyx[2] * trunk_voxel_size,  # X
+             vs_zyx[1] * trunk_voxel_size,  # Y
+             vs_zyx[0] * trunk_voxel_size],  # Z
+            dtype=np.float64,
+        )  # ≈ [38.0, 40.0, 20.8]
+
+        # 2) Rebase mesh nodes：atlas-corner mm → trunk-local mm
+        nodes_trunk = self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
+        self._mesh_data.nodes = nodes_trunk.astype(self._mesh_data.nodes.dtype)
+        # 硬断言：rebase 后躯干节点应有 ≥65% 落在 MCX volume 内
+        in_mcx = np.all(
+            (nodes_trunk >= -1.0) & (nodes_trunk <= trunk_size_mm + 1.0), axis=1
+        )
+        inside_ratio = float(in_mcx.mean())
+        print(f"  [FRAME] Rebased mesh to trunk-local. "
+              f"{inside_ratio*100:.1f}% nodes inside MCX bbox.")
+        # [FIX v3] NOTE: 对于 full-body mesh（非 trunk-cropped），头尾节点必然在 MCX bbox 外，
+        # 57-60% 的节点在 bbox 内是正常值（解剖学比例）。将阈值放宽到 50%，
+        # Gate 2 只在 trunk_offset 完全配错时fail（比如 offset 差 >20mm）。
+        assert inside_ratio >= 0.50, (
+            f"[FIX v3] 只有 {inside_ratio*100:.1f}% 节点在 MCX bbox 内，"
+            f"trunk_offset_mm 可能不匹配（正常 full-body mesh 约 57-60%）"
+        )
+
+        # 3) ROI：以 MCX volume 几何中心为中心的 roi_size^3 立方
+        roi_center = trunk_size_mm / 2.0  # ≈ [19, 20, 10.4]
         roi_half = roi_size / 2.0
-        node_min = mesh_center - roi_half
-        node_max = mesh_center + roi_half
+        node_min = roi_center - roi_half  # trunk-local mm
+        node_max = roi_center + roi_half
         shape = np.ceil((node_max - node_min) / voxel_spacing).astype(int)
 
         voxel_grid_config = VoxelGridConfig(
             shape=tuple(shape),
             spacing=voxel_spacing,
-            offset=node_min,
+            offset=node_min,  # ← trunk-local frame
         )
 
-        mesh_min = self._mesh_data.nodes.min(axis=0)
-        mesh_max = self._mesh_data.nodes.max(axis=0)
+        # 4) mesh_bbox 也用 rebased nodes（tumor placement 不受影响，因为 tumor_generator 内部另有 atlas-frame 逻辑，见 1.2）
+        mesh_min = nodes_trunk.min(axis=0)
+        mesh_max = nodes_trunk.max(axis=0)
         mesh_bbox = {"min": mesh_min.tolist(), "max": mesh_max.tolist()}
 
-        # FIXED: Pass mesh_nodes, tissue_labels, elements for organ constraint validation
+        # 5) TumorGenerator：传入 trunk_offset 让它把 center 转成 trunk-local
         self.tumor_generator = TumorGenerator(
             config=self.tumor_config,
             atlas=self.atlas,
             mesh_bbox=mesh_bbox,
-            mesh_nodes=self._mesh_data.nodes,
+            mesh_nodes=nodes_trunk,  # ← trunk-local
             tissue_labels=self._mesh_data.tissue_labels,
             elements=self._mesh_data.elements,
             organ_constraint_disabled=self.tumor_config.get(
                 "organ_constraint_disabled", False
             ),
+            trunk_offset_mm=trunk_offset_atlas,  # ← 新参数
+            mcx_bbox_mm=(np.zeros(3), trunk_size_mm),  # ← 新参数
         )
 
         dual_sampler = DualSampler(
-            nodes=self._mesh_data.nodes, voxel_grid_config=voxel_grid_config
+            nodes=nodes_trunk, voxel_grid_config=voxel_grid_config
         )
+        # ============================================================================
 
         # ============ Setup TurntableCamera for visible surface filtering ============
         view_config = self.config.get("view_config", {})
@@ -485,6 +577,10 @@ class DatasetBuilder:
 
         # Generate manifest from metadata only
         self._generate_manifest(experiment_output, samples_metadata)
+
+        # [FIX v3] 写 frame_manifest.json（在 mesh rebase 完成之后）
+        mesh_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        self._write_frame_manifest(mesh_path)
 
     def _generate_splits(self, experiment_output: Path, sample_ids: List[str]) -> None:
         """Generate train/val split files.
