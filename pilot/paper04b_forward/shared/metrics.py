@@ -1,59 +1,77 @@
-"""Metrics for MCX vs Green comparison."""
+"""Metrics for comparing MCX vs closed-form forward models."""
+
+from __future__ import annotations
+
+from typing import Tuple
 
 import numpy as np
 
 
-def compute_ncc(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute normalized cross-correlation."""
-    a_flat = a.flatten().astype(np.float64)
-    b_flat = b.flatten().astype(np.float64)
-
-    a_mean = a_flat.mean()
-    b_mean = b_flat.mean()
-
-    a_centered = a_flat - a_mean
-    b_centered = b_flat - b_mean
-
-    num = np.dot(a_centered, b_centered)
-    denom = np.sqrt(np.dot(a_centered, a_centered) * np.dot(b_centered, b_centered))
-
-    if denom < 1e-10:
+def ncc(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.flatten().astype(np.float64)
+    b = b.flatten().astype(np.float64)
+    a_mean = np.mean(a)
+    b_mean = np.mean(b)
+    num = np.sum((a - a_mean) * (b - b_mean))
+    den = np.sqrt(np.sum((a - a_mean) ** 2) * np.sum((b - b_mean) ** 2))
+    if den < 1e-12:
         return 0.0
+    return float(num / den)
 
-    return float(num / denom)
+
+def scale_factor_k(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.flatten().astype(np.float64)
+    b = b.flatten().astype(np.float64)
+    sum_a = np.sum(a)
+    sum_b = np.sum(b)
+    if sum_b < 1e-12:
+        return 0.0
+    return float(sum_a / sum_b)
 
 
-def compute_rmse(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute root mean squared error."""
+def rmse(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.flatten().astype(np.float64)
+    b = b.flatten().astype(np.float64)
     return float(np.sqrt(np.mean((a - b) ** 2)))
 
 
-def compute_scale_factor(mcx: np.ndarray, green: np.ndarray) -> float:
-    """Compute scale factor k = sum(MCX) / sum(Green)."""
-    green_sum = np.sum(green)
-    if green_sum < 1e-10:
+def peak_ratio(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.flatten().astype(np.float64)
+    b = b.flatten().astype(np.float64)
+    peak_a = np.max(np.abs(a))
+    peak_b = np.max(np.abs(b))
+    if peak_b < 1e-12:
         return 0.0
-    return float(np.sum(mcx) / green_sum)
+    return float(peak_a / peak_b)
 
 
-def compute_peak_ratio(mcx: np.ndarray, green: np.ndarray) -> float:
-    """Compute peak ratio = max(MCX) / max(Green)."""
-    green_max = np.max(green)
-    if green_max < 1e-10:
-        return 0.0
-    return float(np.max(mcx) / green_max)
-
-
-def compute_all_metrics(mcx: np.ndarray, green: np.ndarray) -> dict:
-    """Compute all comparison metrics.
-
-    Returns
-    -------
-    dict with keys: ncc, rmse, scale_factor, peak_ratio
-    """
+def compute_all_metrics(mcx_proj: np.ndarray, closed_proj: np.ndarray) -> dict:
+    mcx_valid = mcx_proj.flatten()
+    closed_valid = closed_proj.flatten()
+    mask = (mcx_valid > 0) | (closed_valid > 0)
+    if np.sum(mask) < 10:
+        return {
+            "ncc": 0.0,
+            "k": 0.0,
+            "rmse": float("inf"),
+            "peak_ratio": 0.0,
+            "n_valid": int(np.sum(mask)),
+        }
+    mcx_roi = mcx_valid[mask]
+    closed_roi = closed_valid[mask]
     return {
-        "ncc": compute_ncc(mcx, green),
-        "rmse": compute_rmse(mcx, green),
-        "scale_factor": compute_scale_factor(mcx, green),
-        "peak_ratio": compute_peak_ratio(mcx, green),
+        "ncc": ncc(mcx_roi, closed_roi),
+        "k": scale_factor_k(mcx_roi, closed_roi),
+        "rmse": rmse(mcx_roi, closed_roi),
+        "peak_ratio": peak_ratio(mcx_roi, closed_roi),
+        "n_valid": int(np.sum(mask)),
     }
+
+
+def metrics_summary(metrics: dict) -> str:
+    return (
+        f"NCC={metrics['ncc']:.4f}, "
+        f"k={metrics['k']:.2e}, "
+        f"RMSE={metrics['rmse']:.2e}, "
+        f"peak_ratio={metrics['peak_ratio']:.2f}"
+    )

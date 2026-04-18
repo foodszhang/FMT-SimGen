@@ -1,0 +1,4 @@
+# Ball source configuration
+kind: ball
+alpha: 1.0
+radius_mm: 2.0

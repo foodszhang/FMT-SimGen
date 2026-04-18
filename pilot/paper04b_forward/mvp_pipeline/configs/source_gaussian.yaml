@@ -1,0 +1,4 @@
+# Gaussian source configuration
+kind: gaussian
+alpha: 1.0
+sigma_mm: 1.0
