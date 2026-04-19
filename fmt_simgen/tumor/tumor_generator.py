@@ -211,8 +211,10 @@ class TumorGenerator:
         tissue_labels=None,
         elements=None,
         organ_constraint_disabled: bool = False,
-        trunk_offset_mm=None,  # ← NEW
-        mcx_bbox_mm=None,  # ← NEW: (min_xyz, max_xyz) tuple of np.ndarray
+        trunk_offset_mm=None,
+        mcx_bbox_mm=None,  # (min_xyz, max_xyz) tuple of np.ndarray
+        gt_offset_mm=None,  # gt_voxels offset in trunk-local mm
+        gt_shape=None,  # gt_voxels shape (Nx, Ny, Nz)
     ):
         """Initialize tumor generator.
 
@@ -248,8 +250,14 @@ class TumorGenerator:
             [FIX v3] Offset from atlas-corner to trunk-local world frame [0,30,0].
             Used to convert foci.center from atlas mm to trunk-local mm.
         mcx_bbox_mm : tuple, optional
-            [FIX v3] (min_xyz, max_xyz) tuple of MCX volume bbox in trunk-local mm.
+            (min_xyz, max_xyz) tuple of MCX volume bbox in trunk-local mm.
             Used to reject tumors outside MCX volume.
+        gt_offset_mm : array-like, optional
+            Offset of gt_voxels grid origin in trunk-local mm.
+            Used with gt_shape to reject tumors whose Gaussian support
+            falls entirely outside the gt_voxels lookup domain.
+        gt_shape : tuple, optional
+            Shape of gt_voxels grid (Nx, Ny, Nz).
         """
         self.config = config
         self.atlas = atlas
@@ -263,6 +271,13 @@ class TumorGenerator:
             if trunk_offset_mm is not None else np.zeros(3)
         )
         self.mcx_bbox_mm = mcx_bbox_mm  # 用来拒绝落在 MCX volume 外的 tumor
+
+        # gt_voxels bounding box in trunk-local mm (for strict organ constraint)
+        self.gt_offset_mm = (
+            np.asarray(gt_offset_mm, dtype=np.float64)
+            if gt_offset_mm is not None else None
+        )
+        self.gt_shape = gt_shape  # tuple (Nx, Ny, Nz) or None
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -454,9 +469,22 @@ class TumorGenerator:
         # 拒绝落在 MCX volume 外（加 1mm margin）
         if self.mcx_bbox_mm is not None:
             lo, hi = self.mcx_bbox_mm
+
+            # gt_voxels 也必须覆盖整个 Gaussian support，否则下游 GT 查表全零
+            if self.gt_offset_mm is not None and self.gt_shape is not None:
+                gt_spacing = 0.2  # hardcoded to match dataset_config default
+                gt_hi = self.gt_offset_mm + gt_spacing * np.array(self.gt_shape)
+                strict_lo = np.maximum(lo, self.gt_offset_mm)
+                strict_hi = np.minimum(hi, gt_hi)
+            else:
+                strict_lo = lo
+                strict_hi = hi
+
             for focus in sample.foci:
                 c = np.asarray(focus.center)
-                if np.any(c < lo - 1.0) or np.any(c > hi + 1.0):
+                r = focus.params.get("radius", 1.0)
+                # 整个 Gaussian support（到 4*sigma ≈ 4*r）都要在支撑内
+                if np.any(c - r < strict_lo) or np.any(c + r > strict_hi):
                     sample._organ_constraint_passed = False
                     break
 

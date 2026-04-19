@@ -324,8 +324,10 @@ class DatasetBuilder:
             organ_constraint_disabled=self.tumor_config.get(
                 "organ_constraint_disabled", False
             ),
-            trunk_offset_mm=trunk_offset_atlas,  # ← 新参数
-            mcx_bbox_mm=(np.zeros(3), trunk_size_mm),  # ← 新参数
+            trunk_offset_mm=trunk_offset_atlas,
+            mcx_bbox_mm=(np.zeros(3), trunk_size_mm),
+            gt_offset_mm=voxel_grid_config.offset,  # gt_voxels bounding box
+            gt_shape=voxel_grid_config.shape,  # gt_voxels shape
         )
 
         dual_sampler = DualSampler(
