@@ -37,6 +37,70 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path(__file__).parent.parent / "output" / "shared"
 VIS_DIR = OUTPUT_DIR / "mesh_vis"
 
+# Trunk bounding box in atlas frame (with margin)
+# trunk_offset_mm = [0, 30, 0], trunk_size_mm = [38, 40, 20.8]
+TRUNK_MARGIN_MM = 2.0
+TRUNK_BBOX_ATLAS = {
+    "x": (-1.0, 38.0 + 1.0),
+    "y": (30.0 - 40.0 + TRUNK_MARGIN_MM, 30.0 + 40.0 + TRUNK_MARGIN_MM),  # [~ -10, ~72]
+    "z": (-1.0, 20.8 + 1.0),
+}
+
+
+def _crop_mesh_to_trunk(mesh_data, bbox_atlas):
+    """Crop mesh nodes/elements to trunk bounding box (atlas frame).
+
+    Only keeps nodes within the bounding box and remaps element connectivity.
+    Returns new MeshData with cropped mesh, or original if too few nodes remain.
+    """
+    from dataclasses import replace
+    nodes = mesh_data.nodes
+    elements = mesh_data.elements
+
+    in_bbox = (
+        (nodes[:, 0] >= bbox_atlas["x"][0]) & (nodes[:, 0] <= bbox_atlas["x"][1]) &
+        (nodes[:, 1] >= bbox_atlas["y"][0]) & (nodes[:, 1] <= bbox_atlas["y"][1]) &
+        (nodes[:, 2] >= bbox_atlas["z"][0]) & (nodes[:, 2] <= bbox_atlas["z"][1])
+    )
+    keep_idx = np.where(in_bbox)[0]
+    if len(keep_idx) < 100:
+        logger.warning(f"  Trunk crop: only {len(keep_idx)} nodes, keeping full mesh")
+        return mesh_data
+
+    # Remap old node indices to new consecutive indices
+    old_to_new = np.full(len(nodes), -1, dtype=np.int64)
+    old_to_new[keep_idx] = np.arange(len(keep_idx), dtype=np.int64)
+
+    # Filter elements: all 4 nodes must be in keep_idx
+    elem_mask = in_bbox[elements].all(axis=1)
+    cropped_elements = old_to_new[elements[elem_mask]]
+
+    cropped_nodes = nodes[keep_idx]
+    cropped_tissue_labels = mesh_data.tissue_labels[elem_mask]
+    cropped_surface_faces = mesh_data.surface_faces[
+        in_bbox[mesh_data.surface_faces].all(axis=1)
+    ]
+    # Remap surface face indices
+    sf_old_to_new = np.full(len(nodes), -1, dtype=np.int64)
+    sf_old_to_new[keep_idx] = np.arange(len(keep_idx), dtype=np.int64)
+    cropped_surface_faces = sf_old_to_new[cropped_surface_faces]
+
+    surface_node_indices = np.where(in_bbox)[0]
+
+    logger.info(
+        f"  Trunk crop: {len(nodes)} → {len(cropped_nodes)} nodes, "
+        f"{len(elements)} → {len(cropped_elements)} elements"
+    )
+
+    return replace(
+        mesh_data,
+        nodes=cropped_nodes,
+        elements=cropped_elements,
+        tissue_labels=cropped_tissue_labels,
+        surface_faces=cropped_surface_faces,
+        surface_node_indices=surface_node_indices,
+    )
+
 
 def visualize_surface_mesh(nodes, faces, title, output_path, max_faces=5000):
     """Visualize surface mesh using matplotlib."""
@@ -223,14 +287,18 @@ def main():
     logger.info("=" * 60)
     logger.info("MESH GENERATION COMPLETE")
     logger.info("=" * 60)
-    logger.info(f"Nodes: {mesh_data.nodes.shape[0]}")
+    logger.info(f"Nodes (full body): {mesh_data.nodes.shape[0]}")
     logger.info(f"Elements: {mesh_data.elements.shape[0]}")
     logger.info(f"Tissue labels: {np.unique(mesh_data.tissue_labels)}")
     logger.info(f"Surface faces: {mesh_data.surface_faces.shape[0]}")
     logger.info(f"Surface nodes: {mesh_data.surface_node_indices.shape[0]}")
 
+    # ── Crop to trunk region ──────────────────────────────────────────────────
+    mesh_data = _crop_mesh_to_trunk(mesh_data, TRUNK_BBOX_ATLAS)
+
+    mesh_file = str(OUTPUT_DIR / "mesh.npz")
     generator.save(mesh_data, str(OUTPUT_DIR / "mesh"))
-    logger.info(f"Mesh saved to: {OUTPUT_DIR / 'mesh.npz'}")
+    logger.info(f"Mesh saved to: {mesh_file}")
 
     logger.info("\nGenerating visualizations...")
     try:

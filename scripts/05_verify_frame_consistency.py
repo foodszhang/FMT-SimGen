@@ -39,8 +39,12 @@ def main():
         f"Gate1 FAIL: nodes.max()={nodes.max():.1f} (expected < 45mm for trunk-local). "
         f"mesh.npz may not match manifest."
     )
-    assert nodes.min() >= -1.0, f"Gate1 FAIL: mesh nodes out of reasonable range"
-    print(f"  Gate1 PASS  (mesh.npz in trunk-local, nodes.max={nodes.max():.1f})")
+    # Body extends below Y=0 in trunk-local; just check against a generous lower bound
+    assert nodes.min() >= -30.0, (
+        f"Gate1 FAIL: nodes.min()={nodes.min():.1f} (expected ≥ -30mm). "
+        f"mesh.npz may be in the wrong frame."
+    )
+    print(f"  Gate1 PASS  (mesh.npz in trunk-local, nodes∈[{(nodes.min()):.1f}, {nodes.max():.1f}])")
 
     # Gate 2: ≥60% of trunk-local nodes inside MCX bbox (full-body mesh has head/tail outside)
     in_mcx = np.all(

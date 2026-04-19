@@ -99,15 +99,36 @@ class DatasetBuilder:
             and mesh_file.exists()
             and matrix_file.with_suffix(".M.npz").exists()
         ):
-            # ── Existing assets ────────────────────────────────────────────────
+            # ── Existing assets (assets/mesh/ already populated) ─────────────────
             print(f"Shared assets already exist at {mesh_path}, loading.")
-            self._load_mesh_data(str(mesh_file))   # loads + rebases in-place → trunk-local
+            self._load_mesh_data(str(mesh_file))   # loads + rebases nodes in-place
             self._setup_optical_manager()
             self._setup_fem_solver()               # use trunk-local nodes (A is translation-invariant)
+            # Save rebased mesh to mesh directory
+            np.savez(
+                mesh_file,
+                nodes=self._mesh_data.nodes,
+                elements=self._mesh_data.elements,
+                tissue_labels=self._mesh_data.tissue_labels,
+                surface_faces=self._mesh_data.surface_faces,
+                surface_node_indices=self._mesh_data.surface_node_indices,
+            )
+            # Also save to output/shared/ where DU2Vox expects the mesh
+            shared_mesh = Path("output/shared/mesh.npz")
+            shared_mesh.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                shared_mesh,
+                nodes=self._mesh_data.nodes,
+                elements=self._mesh_data.elements,
+                tissue_labels=self._mesh_data.tissue_labels,
+                surface_faces=self._mesh_data.surface_faces,
+                surface_node_indices=self._mesh_data.surface_node_indices,
+            )
             atlas_nodes = self._mesh_data.nodes.copy()
             matrix_file = self.fem_solver.save_system_matrix(str(mesh_path / "system_matrix"))
-            print(f"Shared assets loaded (re-saved mesh in trunk-local frame)")
-            return {"mesh": mesh_file, "matrix": matrix_file}
+            self._write_frame_manifest()
+            print(f"Shared assets loaded (mesh re-saved in trunk-local frame)")
+            return {"mesh": shared_mesh, "matrix": matrix_file}
 
         if not force_regenerate and default_output.exists():
             existing_mesh = default_output / "mesh.npz"
@@ -117,10 +138,20 @@ class DatasetBuilder:
                 self._load_mesh_data(str(existing_mesh))
                 self._setup_optical_manager()
                 self._setup_fem_solver()
+                # Save rebased mesh alongside existing matrix
+                np.savez(
+                    existing_mesh,
+                    nodes=self._mesh_data.nodes,
+                    elements=self._mesh_data.elements,
+                    tissue_labels=self._mesh_data.tissue_labels,
+                    surface_faces=self._mesh_data.surface_faces,
+                    surface_node_indices=self._mesh_data.surface_node_indices,
+                )
                 atlas_nodes = self._mesh_data.nodes.copy()
                 matrix_file = self.fem_solver.save_system_matrix(
                     str(existing_matrix.parent / "system_matrix")
                 )
+                self._write_frame_manifest()
                 return {
                     "mesh": existing_mesh,
                     "matrix": existing_matrix.parent / "system_matrix",
@@ -156,6 +187,7 @@ class DatasetBuilder:
         matrix_file = self.fem_solver.save_system_matrix(
             str(mesh_path / "system_matrix")
         )
+        self._write_frame_manifest()
         print(f"Shared assets saved to {mesh_path} (mesh in trunk-local mm)")
 
         return {"mesh": mesh_file, "matrix": matrix_file}
@@ -164,10 +196,11 @@ class DatasetBuilder:
         """Load mesh data from npz file and rebase to trunk-local if needed.
 
         After loading, self._mesh_data.nodes is guaranteed to be in trunk-local frame.
-        The on-disk mesh.npz is also updated to trunk-local.
+        Manifest is updated at output/shared/frame_manifest.json (canonical location).
+        The caller (build_shared_assets) is responsible for saving the rebased mesh
+        to output/shared/mesh.npz (where DU2Vox expects it).
         """
         mesh_path = Path(mesh_path)
-        manifest_path = mesh_path.parent / "frame_manifest.json"
         mcx_cfg = self.config.get("mcx", {})
         trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]),
                                dtype=np.float64)
@@ -175,17 +208,21 @@ class DatasetBuilder:
         data = np.load(mesh_path, allow_pickle=True)
         nodes = data["nodes"].astype(np.float64)
 
+        # Canonical manifest location: output/shared/ (DU2Vox shared_dir)
+        manifest_path = Path("output/shared/frame_manifest.json")
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text())
             mesh_frame = manifest.get("fem_mesh", {}).get("frame", "atlas_corner_mm")
         else:
             mesh_frame = "atlas_corner_mm"  # assume old format
 
-        if mesh_frame == "atlas_corner_mm":
-            # Rebase to trunk-local and update manifest
-            nodes = nodes - trunk_offset
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
+        # Always copy manifest to mesh directory (assets/mesh/) for build_samples
+        mesh_dir_manifest = mesh_path.parent / "frame_manifest.json"
+        if manifest_path.exists() and manifest_path != mesh_dir_manifest:
+            manifest = json.loads(manifest_path.read_text())
+            if mesh_frame == "atlas_corner_mm":
+                # Rebase to trunk-local
+                nodes = nodes - trunk_offset
                 manifest["fem_mesh"]["frame"] = "mcx_trunk_local_mm"
                 manifest["fem_mesh"]["bbox_world_mm"]["min"] = (
                     nodes.min(axis=0).tolist()
@@ -194,6 +231,9 @@ class DatasetBuilder:
                     nodes.max(axis=0).tolist()
                 )
                 manifest_path.write_text(json.dumps(manifest, indent=2))
+            # Copy to mesh directory (always, to keep them in sync)
+            import shutil
+            shutil.copy(manifest_path, mesh_dir_manifest)
 
         self._mesh_data = MeshData(
             nodes=nodes.astype(data["nodes"].dtype),
@@ -202,8 +242,6 @@ class DatasetBuilder:
             tissue_labels=data["tissue_labels"],
             surface_node_indices=data["surface_node_indices"],
         )
-        # Save updated (trunk-local) mesh to disk
-        self.mesh_generator.save(self._mesh_data, "mesh")
         print(
             f"  Loaded mesh: {self._mesh_data.nodes.shape[0]} nodes, "
             f"{self._mesh_data.elements.shape[0]} elements (trunk-local)"
@@ -228,10 +266,12 @@ class DatasetBuilder:
         self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
-    def _write_frame_manifest(self, mesh_path: Path) -> None:
+    def _write_frame_manifest(self) -> None:
         """Write frame_manifest.json with authoritative frame metadata.
 
+        Manifest lives in output/shared/ (dataset shared directory).
         mesh.npz is saved in mcx_trunk_local_mm frame (rebase done at write time).
+        Also syncs to assets/mesh/ (where the mesh files live).
         """
         mcx_cfg = self.config.get("mcx", {})
         trunk_offset = list(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
@@ -241,6 +281,19 @@ class DatasetBuilder:
 
         # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
         nodes_trunk = self._mesh_data.nodes.astype(np.float64)
+
+        # Always use output/shared/ as the canonical manifest location
+        shared_dir = Path("output/shared")
+        manifest_path = shared_dir / "frame_manifest.json"
+
+        # Preserve existing frame if manifest already updated by load_mesh_data
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text())
+            fem_mesh_frame = existing.get("fem_mesh", {}).get(
+                "frame", "atlas_corner_mm"
+            )
+        else:
+            fem_mesh_frame = "mcx_trunk_local_mm"
 
         voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
@@ -259,7 +312,7 @@ class DatasetBuilder:
             },
             "fem_mesh": {
                 "file": "mesh.npz",
-                "frame": "mcx_trunk_local_mm",  # mesh.npz is saved in trunk-local
+                "frame": fem_mesh_frame,  # preserve load_mesh_data update
                 "n_nodes": int(nodes_trunk.shape[0]),
                 "bbox_world_mm": {
                     "min": nodes_trunk.min(0).tolist(),
@@ -273,9 +326,15 @@ class DatasetBuilder:
                 "frame": "mcx_trunk_local_mm",
             },
         }
-        with open(mesh_path / "frame_manifest.json", "w") as f:
+        with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
-        print(f"[FRAME] Wrote {mesh_path / 'frame_manifest.json'}")
+        print(f"[FRAME] Wrote {manifest_path}")
+
+        # Also sync to assets/mesh/ where step0b originally placed it
+        import shutil
+        mesh_dir = Path(self.mesh_config.get("output_path", "output/shared"))
+        mesh_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(manifest_path, mesh_dir / "frame_manifest.json")
 
     def build_samples(self, num_samples: Optional[int] = None, start_index: int = 0) -> None:
         """Generate tumor samples with measurements.
@@ -640,8 +699,7 @@ class DatasetBuilder:
         self._generate_manifest(experiment_output, samples_metadata)
 
         # [FIX v3] 写 frame_manifest.json（在 mesh rebase 完成之后）
-        mesh_path = Path(self.mesh_config.get("output_path", "output/shared"))
-        self._write_frame_manifest(mesh_path)
+        self._write_frame_manifest()
 
     def _generate_splits(self, experiment_output: Path, sample_ids: List[str]) -> None:
         """Generate train/val split files.

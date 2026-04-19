@@ -148,11 +148,82 @@ class MeshGenerator:
             f"degenerate={quality.num_degenerate_elements}"
         )
 
-        return MeshData(
+        mesh_data = MeshData(
             nodes=nodes_phys,
             elements=elem[:, :4].astype(np.int32) - 1,
             tissue_labels=tissue_labels_elem,
             surface_faces=surface_faces,
+            surface_node_indices=surface_node_indices,
+        )
+
+        # ── Crop to trunk region ───────────────────────────────────────────────
+        mesh_data = self._crop_to_trunk(mesh_data)
+
+        return mesh_data
+
+    # -------------------------------------------------------------------------
+    # Trunk cropping
+    # -------------------------------------------------------------------------
+    # Trunk bounding box in atlas physical coordinates (mm).
+    # Derived from mcx.trunk_offset_mm=[0,30,0] and mcx.volume_shape=[104,200,190].
+    TRUNK_BBOX_ATLAS = {
+        "x": (-1.0, 39.0),    # trunk X extent: 0..38mm
+        "y": (-8.0, 72.0),    # trunk Y extent: 30..70mm + 2mm margin
+        "z": (-1.0, 21.8),    # trunk Z extent: 0..20.8mm
+    }
+
+    def _crop_to_trunk(self, mesh_data: "MeshData") -> "MeshData":
+        """Crop mesh to trunk bounding box (atlas physical mm).
+
+        Only keeps nodes within the trunk bbox and remaps element connectivity.
+        Returns original mesh_data if too few nodes remain after crop.
+        """
+        from dataclasses import replace
+
+        nodes = mesh_data.nodes
+        elements = mesh_data.elements
+        bbox = self.TRUNK_BBOX_ATLAS
+
+        in_bbox = (
+            (nodes[:, 0] >= bbox["x"][0]) & (nodes[:, 0] <= bbox["x"][1]) &
+            (nodes[:, 1] >= bbox["y"][0]) & (nodes[:, 1] <= bbox["y"][1]) &
+            (nodes[:, 2] >= bbox["z"][0]) & (nodes[:, 2] <= bbox["z"][1])
+        )
+        keep_idx = np.where(in_bbox)[0]
+        n_orig = len(nodes)
+
+        if len(keep_idx) < 100:
+            logger.warning(
+                f"  Trunk crop: only {len(keep_idx)}/{n_orig} nodes, keeping full mesh"
+            )
+            return mesh_data
+
+        # Remap old node indices to new consecutive indices
+        old_to_new = np.full(n_orig, -1, dtype=np.int64)
+        old_to_new[keep_idx] = np.arange(len(keep_idx), dtype=np.int64)
+
+        # Filter elements: all 4 nodes must be in bbox
+        elem_mask = in_bbox[elements].all(axis=1)
+        cropped_elements = old_to_new[elements[elem_mask]]
+        cropped_nodes = nodes[keep_idx]
+        cropped_tissue_labels = mesh_data.tissue_labels[elem_mask]
+
+        # Surface faces: all 3 nodes must be in bbox
+        sf_mask = in_bbox[mesh_data.surface_faces].all(axis=1)
+        cropped_surface_faces = old_to_new[mesh_data.surface_faces[sf_mask]]
+        surface_node_indices = np.unique(cropped_surface_faces)
+
+        logger.info(
+            f"  Trunk crop: {n_orig} → {len(cropped_nodes)} nodes, "
+            f"{len(elements)} → {len(cropped_elements)} elements"
+        )
+
+        return replace(
+            mesh_data,
+            nodes=cropped_nodes,
+            elements=cropped_elements,
+            tissue_labels=cropped_tissue_labels,
+            surface_faces=cropped_surface_faces,
             surface_node_indices=surface_node_indices,
         )
 
