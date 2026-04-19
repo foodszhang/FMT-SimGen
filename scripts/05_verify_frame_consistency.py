@@ -23,35 +23,30 @@ def main():
 
     shared = Path(args.shared)
     manifest = json.load(open(shared / "frame_manifest.json"))
-    trunk_offset = np.array(manifest["atlas_to_world_offset_mm"])
     mcx_bbox_max = np.array(manifest["mcx_volume"]["bbox_world_mm"]["max"])
     mcx_bbox_min = np.array(manifest["mcx_volume"]["bbox_world_mm"]["min"])
     mesh_frame = manifest["fem_mesh"]["frame"]
 
-    # Gate 1: mesh.npz frame matches manifest
+    # Gate 1: mesh.npz frame must be mcx_trunk_local_mm (saved at write time)
     print("Checking mesh frame...")
+    assert mesh_frame == "mcx_trunk_local_mm", (
+        f"Gate1 FAIL: mesh.npz frame={mesh_frame}, expected mcx_trunk_local_mm. "
+        f"Regenerate FMT-SimGen shared assets with unified-frame builder."
+    )
     mesh = np.load(shared / "mesh.npz")
-    nodes_disk = mesh["nodes"]
+    nodes = mesh["nodes"].astype(np.float64)
+    assert nodes.max() < 45, (
+        f"Gate1 FAIL: nodes.max()={nodes.max():.1f} (expected < 45mm for trunk-local). "
+        f"mesh.npz may not match manifest."
+    )
+    assert nodes.min() >= -1.0, f"Gate1 FAIL: mesh nodes out of reasonable range"
+    print(f"  Gate1 PASS  (mesh.npz in trunk-local, nodes.max={nodes.max():.1f})")
 
-    # Convert to trunk-local for checks
-    if mesh_frame == "atlas_corner_mm":
-        nodes = nodes_disk.astype(np.float64) - trunk_offset
-    else:
-        nodes = nodes_disk.astype(np.float64)
-
-    mesh_bbox_min = manifest["fem_mesh"]["bbox_world_mm"]["min"]
-    mesh_bbox_max = manifest["fem_mesh"]["bbox_world_mm"]["max"]
-    assert nodes_disk.min() >= -1.0, \
-        f"Gate1 FAIL: mesh nodes out of reasonable range"
-    assert (np.array(mesh_bbox_max) - nodes_disk.max(axis=0) < 5.0).all(), \
-        f"Gate1 FAIL: mesh bbox mismatch"
-    print(f"  Gate1 PASS  (mesh.npz is {mesh_frame}, trunk-offset={trunk_offset})")
-
-    # Gate 2: ≥50% of trunk-local nodes inside MCX bbox (full-body mesh has head/tail outside)
+    # Gate 2: ≥60% of trunk-local nodes inside MCX bbox (full-body mesh has head/tail outside)
     in_mcx = np.all(
         (nodes >= mcx_bbox_min - 1.0) & (nodes <= mcx_bbox_max + 1.0), axis=1
     ).mean()
-    assert in_mcx >= 0.50, f"Gate2 FAIL: only {in_mcx*100:.1f}% nodes in MCX bbox"
+    assert in_mcx >= 0.60, f"Gate2 FAIL: only {in_mcx*100:.1f}% nodes in MCX bbox"
     print(f"  Gate2 PASS  ({in_mcx*100:.1f}% trunk-local nodes inside MCX bbox)")
 
     # Gate 3-4: per-sample checks

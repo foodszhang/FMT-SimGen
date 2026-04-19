@@ -91,15 +91,22 @@ class DatasetBuilder:
         mesh_file = mesh_path / "mesh.npz"
         matrix_file = mesh_path / "system_matrix"
 
+        # ── Step 0: Atlas nodes for TumorGenerator KDTree (before any rebase) ─
+        atlas_nodes: np.ndarray | None = None
+
         if (
             not force_regenerate
             and mesh_file.exists()
             and matrix_file.with_suffix(".M.npz").exists()
         ):
-            print(f"Shared assets already exist at {mesh_path}, skipping.")
-            self._load_mesh_data(str(mesh_file))
+            # ── Existing assets ────────────────────────────────────────────────
+            print(f"Shared assets already exist at {mesh_path}, loading.")
+            self._load_mesh_data(str(mesh_file))   # loads + rebases in-place → trunk-local
             self._setup_optical_manager()
-            self._load_fem_solver(str(matrix_file))
+            self._setup_fem_solver()               # use trunk-local nodes (A is translation-invariant)
+            atlas_nodes = self._mesh_data.nodes.copy()
+            matrix_file = self.fem_solver.save_system_matrix(str(mesh_path / "system_matrix"))
+            print(f"Shared assets loaded (re-saved mesh in trunk-local frame)")
             return {"mesh": mesh_file, "matrix": matrix_file}
 
         if not force_regenerate and default_output.exists():
@@ -109,12 +116,17 @@ class DatasetBuilder:
                 print(f"Loading existing assets from {default_output}")
                 self._load_mesh_data(str(existing_mesh))
                 self._setup_optical_manager()
-                self._load_fem_solver(str(existing_matrix.parent / "system_matrix"))
+                self._setup_fem_solver()
+                atlas_nodes = self._mesh_data.nodes.copy()
+                matrix_file = self.fem_solver.save_system_matrix(
+                    str(existing_matrix.parent / "system_matrix")
+                )
                 return {
                     "mesh": existing_mesh,
                     "matrix": existing_matrix.parent / "system_matrix",
                 }
 
+        # ── Fresh generation ─────────────────────────────────────────────────
         print("Building shared assets...")
 
         self._setup_atlas()
@@ -125,40 +137,76 @@ class DatasetBuilder:
         self._mesh_data = self.mesh_generator.generate(
             atlas_volume=self.atlas.volume, voxel_size=self.atlas.voxel_size
         )
-
-        mesh_file = self.mesh_generator.save(self._mesh_data, "mesh")
+        # self._mesh_data.nodes is atlas-frame; save this frame before rebase
+        atlas_nodes = self._mesh_data.nodes.copy()
 
         print("  Assembling FEM system matrix...")
         self._setup_fem_solver()
         self.fem_solver.assemble_system_matrix()
 
+        # ── Rebase to trunk-local and save mesh.npz in trunk-local frame ─────
+        mcx_cfg = self.config.get("mcx", {})
+        trunk_offset_atlas = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]),
+                                      dtype=np.float64)
+        self._mesh_data.nodes = (
+            self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
+        ).astype(self._mesh_data.nodes.dtype)
+        mesh_file = self.mesh_generator.save(self._mesh_data, "mesh")
+
         matrix_file = self.fem_solver.save_system_matrix(
             str(mesh_path / "system_matrix")
         )
-
-        print(f"Shared assets saved to {mesh_path}")
+        print(f"Shared assets saved to {mesh_path} (mesh in trunk-local mm)")
 
         return {"mesh": mesh_file, "matrix": matrix_file}
 
     def _load_mesh_data(self, mesh_path: str) -> None:
-        """Load mesh data from npz file.
+        """Load mesh data from npz file and rebase to trunk-local if needed.
 
-        Parameters
-        ----------
-        mesh_path : str
-            Path to mesh npz file.
+        After loading, self._mesh_data.nodes is guaranteed to be in trunk-local frame.
+        The on-disk mesh.npz is also updated to trunk-local.
         """
+        mesh_path = Path(mesh_path)
+        manifest_path = mesh_path.parent / "frame_manifest.json"
+        mcx_cfg = self.config.get("mcx", {})
+        trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]),
+                               dtype=np.float64)
+
         data = np.load(mesh_path, allow_pickle=True)
+        nodes = data["nodes"].astype(np.float64)
+
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            mesh_frame = manifest.get("fem_mesh", {}).get("frame", "atlas_corner_mm")
+        else:
+            mesh_frame = "atlas_corner_mm"  # assume old format
+
+        if mesh_frame == "atlas_corner_mm":
+            # Rebase to trunk-local and update manifest
+            nodes = nodes - trunk_offset
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                manifest["fem_mesh"]["frame"] = "mcx_trunk_local_mm"
+                manifest["fem_mesh"]["bbox_world_mm"]["min"] = (
+                    nodes.min(axis=0).tolist()
+                )
+                manifest["fem_mesh"]["bbox_world_mm"]["max"] = (
+                    nodes.max(axis=0).tolist()
+                )
+                manifest_path.write_text(json.dumps(manifest, indent=2))
+
         self._mesh_data = MeshData(
-            nodes=data["nodes"],
+            nodes=nodes.astype(data["nodes"].dtype),
             elements=data["elements"],
             surface_faces=data["surface_faces"],
             tissue_labels=data["tissue_labels"],
             surface_node_indices=data["surface_node_indices"],
         )
+        # Save updated (trunk-local) mesh to disk
+        self.mesh_generator.save(self._mesh_data, "mesh")
         print(
             f"  Loaded mesh: {self._mesh_data.nodes.shape[0]} nodes, "
-            f"{self._mesh_data.elements.shape[0]} elements"
+            f"{self._mesh_data.elements.shape[0]} elements (trunk-local)"
         )
 
     def _load_fem_solver(self, matrix_prefix: str) -> None:
@@ -183,8 +231,7 @@ class DatasetBuilder:
     def _write_frame_manifest(self, mesh_path: Path) -> None:
         """Write frame_manifest.json with authoritative frame metadata.
 
-        NOTE: mesh.npz 在磁盘上仍为 atlas-frame（不覆盖）；DU2Vox bridge/precomputed
-        使用 in-memory trunk-local nodes 计算的 roi_bbox_mm。两份文件各守各的 frame。
+        mesh.npz is saved in mcx_trunk_local_mm frame (rebase done at write time).
         """
         mcx_cfg = self.config.get("mcx", {})
         trunk_offset = list(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
@@ -192,11 +239,8 @@ class DatasetBuilder:
         vx = float(mcx_cfg.get("voxel_size_mm", 0.2))
         bbox_max = [vs_zyx[2] * vx, vs_zyx[1] * vx, vs_zyx[0] * vx]
 
-        # 当前 self._mesh_data.nodes 是 trunk-local（build_samples 已做 in-place rebase）
+        # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
         nodes_trunk = self._mesh_data.nodes.astype(np.float64)
-
-        # 磁盘上的 mesh.npz 仍是 atlas-frame，记录实际状态
-        nodes_atlas = nodes_trunk + np.array(trunk_offset)
 
         voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
@@ -215,11 +259,11 @@ class DatasetBuilder:
             },
             "fem_mesh": {
                 "file": "mesh.npz",
-                "frame": "atlas_corner_mm",  # 磁盘仍是 atlas frame
+                "frame": "mcx_trunk_local_mm",  # mesh.npz is saved in trunk-local
                 "n_nodes": int(nodes_trunk.shape[0]),
                 "bbox_world_mm": {
-                    "min": nodes_atlas.min(0).tolist(),
-                    "max": nodes_atlas.max(0).tolist(),
+                    "min": nodes_trunk.min(0).tolist(),
+                    "max": nodes_trunk.max(0).tolist(),
                 },
             },
             "voxel_grid_gt": {
@@ -277,19 +321,33 @@ class DatasetBuilder:
             dtype=np.float64,
         )  # ≈ [38.0, 40.0, 20.8]
 
-        # 2) Rebase mesh nodes：atlas-corner mm → trunk-local mm
-        nodes_trunk = self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
-        self._mesh_data.nodes = nodes_trunk.astype(self._mesh_data.nodes.dtype)
-        # 硬断言：rebase 后躯干节点应有 ≥65% 落在 MCX volume 内
+        # 2) Check if mesh needs rebase (load_mesh_data already rebased if needed)
+        # After load_mesh_data: mesh is trunk-local if manifest says mcx_trunk_local_mm,
+        # or atlas if manifest is missing/outdated (old saved mesh).
+        mesh_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        manifest_path = mesh_path / "frame_manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            mesh_frame = manifest.get("fem_mesh", {}).get("frame", "atlas_corner_mm")
+        else:
+            mesh_frame = "atlas_corner_mm"
+
+        if mesh_frame == "atlas_corner_mm":
+            # Defensive rebase for legacy meshes (load_mesh_data already rebased + saved
+            # for manifest=atlas_corner_mm; this is a fallback for edge cases)
+            nodes_trunk = self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
+            self._mesh_data.nodes = nodes_trunk.astype(self._mesh_data.nodes.dtype)
+            print(f"  [FRAME] Warning: legacy atlas-frame mesh rebase in build_samples")
+        else:
+            # Mesh already trunk-local (load_mesh_data did it)
+            nodes_trunk = self._mesh_data.nodes.astype(np.float64)
+
+        # 硬断言：trunk-local 节点应有 ≥50% 落在 MCX volume 内
         in_mcx = np.all(
             (nodes_trunk >= -1.0) & (nodes_trunk <= trunk_size_mm + 1.0), axis=1
         )
         inside_ratio = float(in_mcx.mean())
-        print(f"  [FRAME] Rebased mesh to trunk-local. "
-              f"{inside_ratio*100:.1f}% nodes inside MCX bbox.")
-        # [FIX v3] NOTE: 对于 full-body mesh（非 trunk-cropped），头尾节点必然在 MCX bbox 外，
-        # 57-60% 的节点在 bbox 内是正常值（解剖学比例）。将阈值放宽到 50%，
-        # Gate 2 只在 trunk_offset 完全配错时fail（比如 offset 差 >20mm）。
+        print(f"  [FRAME] Mesh frame={mesh_frame}, {inside_ratio*100:.1f}% nodes inside MCX bbox.")
         assert inside_ratio >= 0.50, (
             f"[FIX v3] 只有 {inside_ratio*100:.1f}% 节点在 MCX bbox 内，"
             f"trunk_offset_mm 可能不匹配（正常 full-body mesh 约 57-60%）"
@@ -328,6 +386,7 @@ class DatasetBuilder:
             mcx_bbox_mm=(np.zeros(3), trunk_size_mm),
             gt_offset_mm=voxel_grid_config.offset,  # gt_voxels bounding box
             gt_shape=voxel_grid_config.shape,  # gt_voxels shape
+            gt_spacing_mm=voxel_spacing,  # gt_voxels spacing (used in organ constraint)
         )
 
         dual_sampler = DualSampler(

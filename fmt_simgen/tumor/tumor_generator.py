@@ -215,6 +215,7 @@ class TumorGenerator:
         mcx_bbox_mm=None,  # (min_xyz, max_xyz) tuple of np.ndarray
         gt_offset_mm=None,  # gt_voxels offset in trunk-local mm
         gt_shape=None,  # gt_voxels shape (Nx, Ny, Nz)
+        gt_spacing_mm=None,  # voxel spacing of gt_voxels grid
     ):
         """Initialize tumor generator.
 
@@ -258,6 +259,9 @@ class TumorGenerator:
             falls entirely outside the gt_voxels lookup domain.
         gt_shape : tuple, optional
             Shape of gt_voxels grid (Nx, Ny, Nz).
+        gt_spacing_mm : float, optional
+            Voxel spacing of gt_voxels grid. Used for organ constraint
+            (defaults to 0.2 if not provided).
         """
         self.config = config
         self.atlas = atlas
@@ -278,6 +282,7 @@ class TumorGenerator:
             if gt_offset_mm is not None else None
         )
         self.gt_shape = gt_shape  # tuple (Nx, Ny, Nz) or None
+        self.gt_spacing_mm = gt_spacing_mm if gt_spacing_mm is not None else 0.2
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -472,8 +477,7 @@ class TumorGenerator:
 
             # gt_voxels 也必须覆盖整个 Gaussian support，否则下游 GT 查表全零
             if self.gt_offset_mm is not None and self.gt_shape is not None:
-                gt_spacing = 0.2  # hardcoded to match dataset_config default
-                gt_hi = self.gt_offset_mm + gt_spacing * np.array(self.gt_shape)
+                gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
                 strict_lo = np.maximum(lo, self.gt_offset_mm)
                 strict_hi = np.minimum(hi, gt_hi)
             else:
