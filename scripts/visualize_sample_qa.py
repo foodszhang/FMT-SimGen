@@ -56,6 +56,7 @@ view_cfg = json.load(open(SHARED / "view_config.json"))
 camera = TurntableCamera(view_cfg)
 angles = view_cfg["angles"]
 CAMERA_DIST = 200.0  # mm, matches mcx_projection.py
+fov_mm = view_cfg.get("fov_mm", 80.0)  # read from config, not hardcoded
 
 
 def get_camera_frame(angle_deg):
@@ -156,7 +157,7 @@ for angle in angles:
     if proj0 is not None and f"depth_{angle}" in proj0:
         depth_map = proj0[f"depth_{angle}"]
         vis = camera.get_visible_surface_nodes_from_mcx_depth(
-            nodes, surf_normals, depth_map, angle, depth_tolerance_mm=15.0
+            nodes, surf_normals, depth_map, angle
         )
         # Map all-node indices → surface-coord indices
         # unique_surf[i_surf] = node_index, so invert: node_index → i_surf

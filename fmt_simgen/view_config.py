@@ -57,6 +57,14 @@ class TurntableCamera:
         # For supine: platform at +Z (dorsal), occludes Z > z_center
         self.z_center: float = config.get("platform_z_center", 10.5)
 
+        # Volume center in world/trunk-local coordinates (mm).
+        # Must match the MCX volume center used in mcx_projection.py.
+        # For the trunk volume: center = (19.0, 20.0, 10.4) mm,
+        # which is the midpoint of MCX bbox [0,38]×[0,40]×[0,20.8].
+        self.volume_center_world: np.ndarray = np.array(
+            config.get("volume_center_world", [19.0, 20.0, 10.4]), dtype=np.float64
+        )
+
         logger.info(
             f"TurntableCamera: pose={self.pose}, distance={self.camera_distance_mm}mm, "
             f"detector={self.detector_resolution}, fov={self.fov_mm}mm"
@@ -91,12 +99,17 @@ class TurntableCamera:
         θ = np.deg2rad(angle_deg)
         D = self.camera_distance_mm
 
-        # Rotate nodes around Y axis (same as MCX)
+        # Shift to volume-center frame, then rotate around Y axis.
+        # This matches mcx_projection.py::project_volume_reference which shifts
+        # by volume_center_world before the Y-axis rotation.
+        c = self.volume_center_world
+        p = node_coords - c
+
         cos_t = np.cos(θ)
         sin_t = np.sin(θ)
-        x_rot = node_coords[:, 0] * cos_t + node_coords[:, 2] * sin_t
-        y_rot = node_coords[:, 1]  # Y unchanged
-        z_rot = -node_coords[:, 0] * sin_t + node_coords[:, 2] * cos_t
+        x_rot = p[:, 0] * cos_t + p[:, 2] * sin_t
+        y_rot = p[:, 1]  # Y unchanged
+        z_rot = -p[:, 0] * sin_t + p[:, 2] * cos_t
 
         # Camera-frame depth: positive = in front of camera
         depth = D - z_rot
@@ -123,7 +136,7 @@ class TurntableCamera:
         node_normals: np.ndarray,
         depth_map: np.ndarray,
         angle_deg: float,
-        depth_tolerance_mm: float = 0.5,
+        depth_tolerance_mm: float = 0.2,
     ) -> np.ndarray:
         """Get visible surface nodes using MCX depth_map for self-occlusion.
 
@@ -131,13 +144,8 @@ class TurntableCamera:
         1. It is a surface node (non-zero normal)
         2. Its normal faces the camera (dot(normal, view_dir) > 0)
         3. It is not platform-occluded
-        4. Its depth in camera frame is <= depth_map[pv, pu] + tolerance
-           (i.e., it is at or shallower than the frontmost MCX voxel,
-           so it is not fully occluded by tissue in front)
-
-        This reuses the MCX fluence volume's depth_map — MCX already
-        accounts for photon transport and self-occlusion via Monte Carlo
-        simulation, giving physically correct surface visibility.
+        4. Its camera-frame depth <= depth_map[pv, pu] + ε
+           (i.e., it is at or shallower than the frontmost fluence voxel)
 
         Parameters
         ----------
@@ -147,12 +155,12 @@ class TurntableCamera:
             Surface normals [N×3].
         depth_map : np.ndarray
             MCX depth_map [H×W] in camera frame (mm). depth_map[pv, pu] is
-            the depth of the shallowest non-zero fluence voxel at that pixel.
-            Set pixel to inf if no fluence.
+            the depth of the voxel with maximum fluence at that pixel.
+            Set pixel to inf if no fluence reaches that pixel.
         angle_deg : float
             Rotation angle in degrees.
         depth_tolerance_mm : float
-            Tolerance for depth comparison (default 0.5mm ≈ 2-3 voxels).
+            Tolerance for depth comparison (default 0.2mm = voxel_size).
             A node is visible if its depth is within this of depth_map.
 
         Returns
@@ -177,16 +185,27 @@ class TurntableCamera:
         # 4. Project to detector
         u_px, v_px, depth = self.project_nodes_to_detector(node_coords, angle_deg)
 
+        H, W = depth_map.shape
         w_px, h_px = self.detector_resolution
-        in_bounds = (u_px >= 0) & (u_px < w_px) & (v_px >= 0) & (v_px < h_px)
 
-        # 5. MCX self-occlusion: inf pixel = no photon reaches there = occluded
-        #    finite pixel = some photon reaches there = surface is visible
-        mcx_occluded = np.zeros(len(node_coords), dtype=bool)
-        if in_bounds.any():
-            mcx_depth_at_node = depth_map[v_px[in_bounds], u_px[in_bounds]]
-            # Occluded if depth_map is inf (no photon reaches that pixel)
-            mcx_occluded[in_bounds] = ~np.isfinite(mcx_depth_at_node)
+        # 5. MCX self-occlusion via depth comparison
+        # Node is occluded if:
+        #   - out of FOV, OR
+        #   - pixel has no fluence coverage (depth_map is +inf), OR
+        #   - node is behind the frontmost fluence voxel (depth > depth_map + ε)
+        mcx_occluded = np.ones(len(node_coords), dtype=bool)
+        in_fov = (u_px >= 0) & (u_px < w_px) & (v_px >= 0) & (v_px < h_px)
+        if in_fov.any():
+            idx = np.where(in_fov)[0]
+            # Clip+round to safely handle edge pixels
+            u_i = np.clip(np.round(u_px[idx]).astype(np.int32), 0, W - 1)
+            v_i = np.clip(np.round(v_px[idx]).astype(np.int32), 0, H - 1)
+            mcx_d = depth_map[v_i, u_i]          # [M] depth from MCX
+            node_d = depth[idx]                   # [M] depth of this node
+
+            has_coverage = np.isfinite(mcx_d)                        # pixel has fluence
+            not_occluded = node_d <= (mcx_d + depth_tolerance_mm)     # node in front
+            mcx_occluded[idx] = ~(has_coverage & not_occluded)
 
         visible = is_surface & facing_camera & ~platform_occl & ~mcx_occluded
         return np.where(visible)[0].astype(np.int32)

@@ -9,8 +9,8 @@ Coordinate system:
 - JNII → XYZ: transpose(2, 1, 0) → shape (X=190, Y=200, Z=104)
 - Projection places volume center at world origin by default.
   The volume_center_world parameter shifts this to the correct atlas position.
-  For MCX trunk volume (after 2× downsample): volume_center_world=(19.0, 50.0, 10.4)
-  meaning the volume center voxel [95, 100, 52] corresponds to world (X=19mm, Y=50mm, Z=10.4mm).
+  For MCX trunk volume (after 2× downsample): volume_center_world=(19.0, 20.0, 10.4)
+  meaning the volume center voxel [95, 100, 52] corresponds to world (X=19mm, Y=20mm, Z=10.4mm).
 - Camera at [0, 0, D] looking toward origin along -Z, with rotation around Y axis.
 """
 
