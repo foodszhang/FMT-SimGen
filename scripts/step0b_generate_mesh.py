@@ -111,6 +111,62 @@ def plot_tissue_label_distribution(labels, title, output_path):
     logger.info(f"Saved tissue distribution: {output_path}")
 
 
+def filter_exterior_faces(
+    elements: np.ndarray,
+    surface_faces: np.ndarray,
+) -> np.ndarray:
+    """Filter surface faces to exterior hull only (adjacent to exactly 1 tet).
+
+    Interior label-boundary faces are adjacent to 2 tetrahedra (different labels).
+    Exterior hull faces are adjacent to exactly 1 tetrahedron — the true outer surface.
+
+    Parameters
+    ----------
+    elements : np.ndarray [M×4]
+        Tetrahedron node indices.
+    surface_faces : np.ndarray [F×3]
+        All surface triangle vertex indices.
+
+    Returns
+    -------
+    np.ndarray [E×3]
+        Exterior hull faces only (subset of surface_faces).
+    """
+    # Count how many tets each face belongs to
+    face_counts: dict[tuple[int, int, int], int] = {}
+    for elem in elements:
+        n0, n1, n2, n3 = elem
+        # 4 faces per tet (sorted so (a,b,c) == (c,a,b) etc.)
+        for face in [
+            tuple(sorted((n0, n1, n2))),
+            tuple(sorted((n0, n1, n3))),
+            tuple(sorted((n0, n2, n3))),
+            tuple(sorted((n1, n2, n3))),
+        ]:
+            face_counts[face] = face_counts.get(face, 0) + 1
+
+    # Build set of exterior faces (adjacent to exactly 1 tet)
+    exterior_set = {
+        face for face, count in face_counts.items() if count == 1
+    }
+
+    # Filter surface_faces to those in exterior_set
+    exterior_faces = []
+    for face in surface_faces:
+        key = tuple(sorted(face))
+        if key in exterior_set:
+            exterior_faces.append(face)
+
+    exterior_faces = np.array(exterior_faces, dtype=surface_faces.dtype)
+    n_total = len(surface_faces)
+    n_exterior = len(exterior_faces)
+    logger.info(
+        f"Exterior hull filter: {n_exterior}/{n_total} faces "
+        f"({100 * n_exterior / max(n_total, 1):.1f}%)"
+    )
+    return exterior_faces
+
+
 def main():
     parser = argparse.ArgumentParser(description="Step 0b: Generate tetrahedral mesh")
     parser.add_argument(
@@ -208,9 +264,16 @@ def main():
         f"Face index {mesh_data.surface_faces.max()} out of range [{mesh_data.nodes.shape[0]}]"
     )
 
+    # Compute exterior hull faces (adjacent to exactly 1 tet)
+    exterior_surface_faces = filter_exterior_faces(
+        mesh_data.elements, mesh_data.surface_faces
+    )
+
     # Save
     mesh_file = str(OUTPUT_DIR / "mesh.npz")
-    generator.save(mesh_data, str(OUTPUT_DIR / "mesh"))
+    generator.save_exterior(
+        mesh_data, exterior_surface_faces, str(OUTPUT_DIR / "mesh")
+    )
     logger.info(f"Mesh saved to: {mesh_file}")
 
     # ── Visualizations ─────────────────────────────────────────────────────────

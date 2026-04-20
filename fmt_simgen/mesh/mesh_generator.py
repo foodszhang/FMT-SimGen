@@ -495,6 +495,44 @@ class MeshGenerator:
         logger.info(f"Mesh saved to: {filepath}")
         return filepath
 
+    def save_exterior(
+        self,
+        mesh_data: MeshData,
+        exterior_surface_faces: np.ndarray,
+        filename: str,
+    ) -> Path:
+        """Save mesh data including exterior hull faces to .npz file.
+
+        Parameters
+        ----------
+        mesh_data : MeshData
+            Mesh data to save.
+        exterior_surface_faces : np.ndarray [E×3]
+            Exterior hull faces (adjacent to exactly 1 tet).
+        filename : str
+            Output filename (without extension).
+
+        Returns
+        -------
+        Path
+            Path to saved file.
+        """
+        self.output_path.mkdir(parents=True, exist_ok=True)
+        filepath = self.output_path / f"{filename}.npz"
+
+        np.savez(
+            filepath,
+            nodes=mesh_data.nodes,
+            elements=mesh_data.elements,
+            tissue_labels=mesh_data.tissue_labels,
+            surface_faces=mesh_data.surface_faces,
+            surface_node_indices=mesh_data.surface_node_indices,
+            exterior_surface_faces=exterior_surface_faces,
+        )
+
+        logger.info(f"Mesh saved to: {filepath}")
+        return filepath
+
     def load(self, filename: str) -> MeshData:
         """Load mesh data from .npz file.
 

@@ -52,13 +52,14 @@ def load_shared():
     nodes = mesh["nodes"].astype(np.float64)
     elements = mesh["elements"]
     surface_faces = mesh["surface_faces"]
+    exterior_surface_faces = mesh["exterior_surface_faces"]
     tissue_labels = mesh["tissue_labels"]
 
     # MCX volume: ZYX order, uint8 labels
     mcx_raw = np.fromfile(MCX_VOL_PATH, dtype=np.uint8)
     mcx_xyz = mcx_raw.reshape((104, 200, 190)).transpose(2, 1, 0)  # XYZ uint8
 
-    return nodes, elements, surface_faces, tissue_labels, mcx_xyz
+    return nodes, elements, surface_faces, exterior_surface_faces, tissue_labels, mcx_xyz
 
 
 def load_sample():
@@ -77,7 +78,7 @@ def gate1_u5_assertion():
     logger.info("Gate 1: U5 Frame Consistency Assertion")
     logger.info("=" * 60)
 
-    nodes, _, _, _, mcx_xyz = load_shared()
+    nodes, _, _, _, _, mcx_xyz = load_shared()
 
     # MCX body voxel centers in trunk-local mm
     body_idx = np.argwhere(mcx_xyz > 0)
@@ -156,7 +157,7 @@ def gate2_mesh_mcx_overlay():
     logger.info("Gate 2: Mesh × MCX Volume overlay")
     QA_DIR.mkdir(parents=True, exist_ok=True)
 
-    nodes, _, surface_faces, _, mcx_xyz = load_shared()
+    nodes, _, surface_faces, _, _, mcx_xyz = load_shared()
 
     slices = [
         ("Z", 10.0, "Axial (Z=10mm)"),
@@ -200,7 +201,7 @@ def gate3_tumor_dual_source():
     logger.info("Gate 3: Tumor dual-source L2 check")
     QA_DIR.mkdir(parents=True, exist_ok=True)
 
-    _, _, _, _, mcx_xyz = load_shared()
+    _, _, _, _, _, mcx_xyz = load_shared()
     tumor_params, _, _ = load_sample()
 
     voxel_size = VOXEL_SIZE_MM  # 0.2 mm
@@ -208,7 +209,7 @@ def gate3_tumor_dual_source():
     # For each focus, find:
     # 1. MCX tumor voxel center (centroid of tumor voxels in mask)
     # 2. Mesh tumor tet center (centroid of tets with center within tumor radius)
-    nodes, elements, _, _, _ = load_shared()
+    nodes, elements, _, _, _, _ = load_shared()
     elem_centers = nodes[elements[:, :4]].mean(axis=1)
 
     results = []
@@ -289,8 +290,6 @@ def gate3_tumor_dual_source():
         return False
 
 
-# ─── Gate 4: Visibility UNION snapshot ───────────────────────────────────────
-
 def gate4_visibility_union():
     """Gate 4: Visibility UNION snapshot @ ε=0.5 using project_volume_reference."""
     logger.info("Gate 4: Visibility UNION snapshot @ ε=0.5")
@@ -298,7 +297,14 @@ def gate4_visibility_union():
 
     from fmt_simgen.view_config import get_visible_surface_nodes_from_mcx_depth
 
-    nodes, _, surface_faces, _, mcx_xyz = load_shared()
+    nodes, elements, surface_faces, exterior_surface_faces, _, mcx_xyz = load_shared()
+
+    # Use exterior hull faces from mesh.npz (adjacent to exactly 1 tet)
+    ext_faces = exterior_surface_faces
+    logger.info(
+        f"  Exterior faces: {len(ext_faces)} / {len(surface_faces)} "
+        f"({len(ext_faces)/len(surface_faces)*100:.1f}%)"
+    )
 
     # Compute depth map using mcx_volume > 0 (tissue surface)
     # project_volume_reference(mcx_volume > 0, vcw=VOLUME_CENTER_WORLD, voxel=VOXEL_SIZE_MM)
@@ -321,6 +327,7 @@ def gate4_visibility_union():
             voxel_size=VOXEL_SIZE_MM,
             volume_center_world=VOLUME_CENTER_WORLD,
             epsilon=union_epsilon,
+            exterior_faces=ext_faces,
         )
         results[angle] = {
             "finite_px": int(finite_px),
@@ -371,7 +378,7 @@ def gate5_de_solution_sanity():
 
     # Check 2: Source position should have max value
     # Find node closest to tumor focus center
-    nodes, _, _, _, _ = load_shared()
+    nodes, _, _, _, _, _ = load_shared()
     focus0_center = np.array(tumor_params["foci"][0]["center"])
     # measurement_b corresponds to surface nodes (first len(b) nodes in mesh)
     surf_nodes = nodes[:len(b)]

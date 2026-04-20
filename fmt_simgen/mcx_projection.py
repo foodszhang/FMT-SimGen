@@ -24,6 +24,7 @@ import jdata as jd
 import numpy as np
 from numba import njit, prange
 
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD as _VCW
 from fmt_simgen.view_config import TurntableCamera
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def project_volume_reference(
     fov_mm: float,
     detector_resolution: tuple[int, int],
     voxel_size_mm: float = 0.2,
-    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    volume_center_world: tuple[float, float, float] = _VCW,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reference orthographic projection (adapted from gen_mul_projection.py).
 
@@ -72,9 +73,9 @@ def project_volume_reference(
     detector_resolution : tuple
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
-        World coordinate (X, Y, Z) of the volume center in mm.
-        Default (0,0,0) places volume center at world origin.
-        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
+        World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
+        After centering, the volume corner is placed at this world position.
 
     Returns
     -------
@@ -99,16 +100,14 @@ def project_volume_reference(
     if len(nonzero_indices) == 0:
         return projection, depth_map
 
-    N = len(nonzero_indices)
-    points = np.zeros((N, 3), dtype=np.float32)
-    points[:, 0] = nonzero_indices[:, 0] - nx / 2 + 0.5
-    points[:, 1] = nonzero_indices[:, 1] - ny / 2 + 0.5
-    points[:, 2] = nonzero_indices[:, 2] - nz / 2 + 0.5
-
-    # Voxel indices → physical coordinates (mm)
+    # Voxel indices → physical coordinates (mm), corner-origin
+    points = np.zeros((len(nonzero_indices), 3), dtype=np.float32)
+    points[:, 0] = nonzero_indices[:, 0] + 0.5
+    points[:, 1] = nonzero_indices[:, 1] + 0.5
+    points[:, 2] = nonzero_indices[:, 2] + 0.5
     points *= voxel_size_mm
 
-    # Shift to place volume center at volume_center_world
+    # Shift so volume corner (voxel 0) is placed at volume_center_world
     cx, cy, cz = volume_center_world
     points[:, 0] -= cx
     points[:, 1] -= cy
@@ -206,7 +205,7 @@ def project_volume_reference_numpy(
     fov_mm: float,
     detector_resolution: tuple[int, int],
     voxel_size_mm: float = 0.2,
-    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    volume_center_world: tuple[float, float, float] = _VCW,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pure-numpy orthographic projection (no numba required).
 
@@ -226,9 +225,8 @@ def project_volume_reference_numpy(
     detector_resolution : tuple
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
-        World coordinate (X, Y, Z) of the volume center in mm.
-        Default (0,0,0) places volume center at world origin.
-        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
+        World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
 
     Returns
     -------
@@ -254,15 +252,14 @@ def project_volume_reference_numpy(
 
     N = len(nonzero_indices)
 
-    # 2. Voxel centers centered at origin
-    points = nonzero_indices.astype(np.float32) - np.array(
-        [nx / 2, ny / 2, nz / 2], dtype=np.float32
-    ) + 0.5
-
-    # Voxel indices → physical coordinates (mm)
+    # 2. Voxel centers in physical mm, corner-origin
+    points = np.zeros((N, 3), dtype=np.float32)
+    points[:, 0] = nonzero_indices[:, 0] + 0.5
+    points[:, 1] = nonzero_indices[:, 1] + 0.5
+    points[:, 2] = nonzero_indices[:, 2] + 0.5
     points *= voxel_size_mm
 
-    # Shift to place volume center at volume_center_world
+    # Shift so volume corner (voxel 0) is placed at volume_center_world
     cx, cy, cz = volume_center_world
     points[:, 0] -= cx
     points[:, 1] -= cy
@@ -337,7 +334,7 @@ def project_mcx_fluence(
     fluence_xyz: np.ndarray,
     camera: TurntableCamera,
     voxel_size_mm: float = 0.2,
-    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    volume_center_world: tuple[float, float, float] = _VCW,
 ) -> Dict[str, np.ndarray]:
     """Project MCX fluence volume to multi-angle 2D projections.
 
@@ -352,9 +349,8 @@ def project_mcx_fluence(
     camera : TurntableCamera
         Camera model with configured angles and detector parameters.
     volume_center_world : tuple[float, float, float]
-        World coordinate (X, Y, Z) of the volume center in mm.
-        Default (0,0,0) places volume center at world origin.
-        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
+        World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
 
     Returns
     -------
@@ -389,7 +385,7 @@ def project_sample(
     camera: TurntableCamera,
     skip_existing: bool = True,
     voxel_size_mm: float = 0.2,
-    volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    volume_center_world: tuple[float, float, float] = _VCW,
 ) -> Path:
     """Project a single sample's MCX fluence to proj.npz.
 
@@ -402,9 +398,8 @@ def project_sample(
     skip_existing : bool
         If True (default), skip samples with existing proj.npz.
     volume_center_world : tuple[float, float, float]
-        World coordinate (X, Y, Z) of the volume center in mm.
-        Default (0,0,0) places volume center at world origin.
-        For MCX trunk volume (after 2× downsample): (19.0, 50.0, 10.4).
+        World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
 
     Returns
     -------

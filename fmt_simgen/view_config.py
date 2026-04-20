@@ -37,7 +37,6 @@ class TurntableCamera:
         - camera_distance_mm: float, camera to turntable distance
         - detector_resolution: list of int, [width, height] in pixels
         - projection_type: str, "orthographic" (only supported)
-        - platform_occlusion: bool, whether to apply platform occlusion
     """
 
     def __init__(self, config: dict) -> None:
@@ -46,18 +45,12 @@ class TurntableCamera:
         self.camera_distance_mm: float = config.get("camera_distance_mm", 200.0)
         self.detector_resolution: tuple[int, int] = tuple(config.get("detector_resolution", [256, 256]))
         self.projection_type: str = config.get("projection_type", "orthographic")
-        self.platform_occlusion: bool = config.get("platform_occlusion", True)
 
         # FOV in mm for orthographic projection
         self.fov_mm: float = config.get("fov_mm", 50.0)
 
         # Pixel size in mm
         self.pixel_size_mm: float = self.fov_mm / self.detector_resolution[0]
-
-        # Platform occlusion threshold (Z coordinate of platform plane)
-        # For prone: platform at -Z (ventral), occludes Z < z_center
-        # For supine: platform at +Z (dorsal), occludes Z > z_center
-        self.z_center: float = config.get("platform_z_center", 10.5)
 
         # Volume center in world/trunk-local coordinates (mm).
         # Must match the MCX volume center used in mcx_projection.py.
@@ -178,13 +171,7 @@ class TurntableCamera:
         # 2. Normal-facing check
         facing_camera = np.dot(node_normals, view_dir) > 0
 
-        # 3. Platform occlusion
-        if self.platform_occlusion:
-            platform_occl = self._is_occluded_by_platform(node_coords)
-        else:
-            platform_occl = np.zeros(len(node_coords), dtype=bool)
-
-        # 4. Project to detector
+        # 3. Project to detector
         u_px, v_px, depth = self.project_nodes_to_detector(node_coords, angle_deg)
 
         H, W = depth_map.shape
@@ -209,7 +196,7 @@ class TurntableCamera:
             not_occluded = node_d <= (mcx_d + depth_tolerance_mm)     # node in front
             mcx_occluded[idx] = ~(has_coverage & not_occluded)
 
-        visible = is_surface & facing_camera & ~platform_occl & ~mcx_occluded
+        visible = is_surface & facing_camera & ~mcx_occluded
         return np.where(visible)[0].astype(np.int32)
 
     def compute_surface_normals(
@@ -289,7 +276,11 @@ class TurntableCamera:
 
         The view direction lies in the XZ plane and rotates around Y axis.
         At 0°, view from +Z direction (looking down at dorsal side).
-        At 90°, view from +X direction (looking at lateral side).
+        At 90°, view from -X direction (looking at lateral side).
+
+        This matches the convention used by project_volume_reference:
+        camera is placed at D*(sinθ, 0, cosθ) in world, rays parallel to -Z.
+        After rotating by +θ, the effective view direction is (-sinθ, 0, cosθ).
 
         Parameters
         ----------
@@ -302,29 +293,7 @@ class TurntableCamera:
             Unit view direction vector [3].
         """
         angle_rad = np.deg2rad(angle_deg)
-        return np.array([np.sin(angle_rad), 0.0, np.cos(angle_rad)], dtype=np.float64)
-
-    def _is_occluded_by_platform(self, node_coords: np.ndarray) -> np.ndarray:
-        """Determine if nodes are occluded by the platform.
-
-        Parameters
-        ----------
-        node_coords : np.ndarray
-            Node coordinates [N×3].
-
-        Returns
-        -------
-        np.ndarray
-            Boolean array [N], True if occluded by platform.
-        """
-        z = node_coords[:, 2]
-
-        if self.pose == "prone":
-            # Platform at -Z (ventral), occlude nodes below center
-            return z < self.z_center
-        else:  # supine
-            # Platform at +Z (dorsal), occlude nodes above center
-            return z > self.z_center
+        return np.array([-np.sin(angle_rad), 0.0, np.cos(angle_rad)], dtype=np.float64)
 
     def get_visible_surface_nodes(
         self,
@@ -357,17 +326,11 @@ class TurntableCamera:
         # Normal-facing check: dot(normal, view_dir) > 0 means node faces camera
         facing_camera = np.dot(node_normals, view_dir) > 0
 
-        # Platform occlusion check
-        if self.platform_occlusion:
-            occluded = self._is_occluded_by_platform(node_coords)
-        else:
-            occluded = np.zeros(len(node_coords), dtype=bool)
-
         # Surface node mask (non-zero normals)
         is_surface = np.linalg.norm(node_normals, axis=1) > 1e-6
 
         # Combined visibility
-        visible = is_surface & facing_camera & ~occluded
+        visible = is_surface & facing_camera
 
         return np.where(visible)[0].astype(np.int32)
 
@@ -408,6 +371,7 @@ def get_visible_surface_nodes_from_mcx_depth(
     voxel_size: float,
     volume_center_world: tuple[float, float, float],
     epsilon: float = 0.5,
+    exterior_faces: np.ndarray | None = None,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Standalone wrapper: compute depth_map from mask, then return visible nodes.
 
@@ -420,7 +384,8 @@ def get_visible_surface_nodes_from_mcx_depth(
     node_coords : np.ndarray [N×3]
         Node coordinates in mm (trunk-local frame).
     surface_faces : np.ndarray [F×3]
-        Surface triangle vertex indices.
+        All surface triangle vertex indices (including interior label-boundary faces).
+        Ignored if exterior_faces is provided.
     mask_xyz : np.ndarray [X×Y×Z]
         Binary tissue mask (e.g. mcx_volume > 0).
     angle_deg : float
@@ -431,6 +396,10 @@ def get_visible_surface_nodes_from_mcx_depth(
         Physical center of the MCX volume in trunk-local mm, e.g. (19.0, 20.0, 10.4).
     epsilon : float
         Bilateral depth tolerance in mm (default 0.5).
+    exterior_faces : np.ndarray [E×3] or None
+        If provided, use only these exterior-hull faces (adjacent to exactly 1 tet)
+        for surface-normal computation. This excludes interior label-boundary faces
+        that would otherwise appear as "surface" but lie 5-10mm inside the body.
 
     Returns
     -------
@@ -449,13 +418,11 @@ def get_visible_surface_nodes_from_mcx_depth(
 
     # 1. Compute depth map from tissue mask.
     #
-    # IMPORTANT: Use volume_center_world=(0,0,0) here because the mask volume
-    # is already in trunk-local frame (corner at origin). project_volume_reference
-    # shifts by -volume_center_world before computing camera depth, so passing
-    # (0,0,0) gives depth = D - z_world (no offset), which correctly represents
-    # the physical depth from camera to the tissue front along each ray.
-    # Using volume_center_world=(19,20,10.4) would offset depth by +10.4mm,
-    # which does NOT match MCX actual depth.
+    # project_volume_reference internally centers the volume via (idx - N/2 + 0.5)*vs
+    # (equivalent to subtracting VCW=(cx,cy,cz) for our grid size), so passing
+    # vcw=(0,0,0) produces depth = D - (z_trunk - cz) in the same camera frame
+    # as project_nodes_to_detector(vcw=VCW). Both sources are grid-centered and
+    # thus directly comparable without any systemic offset.
     _, depth_map = project_volume_reference(
         mask_xyz.astype(np.uint8),
         angle_deg=angle_deg,
@@ -463,7 +430,7 @@ def get_visible_surface_nodes_from_mcx_depth(
         fov_mm=fov_mm,
         detector_resolution=detector_resolution,
         voxel_size_mm=voxel_size,
-        volume_center_world=(0.0, 0.0, 0.0),
+        volume_center_world=VOLUME_CENTER_WORLD,
     )
 
     finite_px = int(np.isfinite(depth_map).sum())
@@ -478,14 +445,13 @@ def get_visible_surface_nodes_from_mcx_depth(
         detector_resolution=detector_resolution,
     )
     camera = TurntableCamera(camera_cfg)
-    node_normals = camera.compute_surface_normals(node_coords, surface_faces)
+    # Use exterior hull faces only if provided, to exclude interior label-boundary faces
+    faces_for_normals = exterior_faces if exterior_faces is not None else surface_faces
+    node_normals = camera.compute_surface_normals(node_coords, faces_for_normals)
 
     # 3. Get visible surface nodes using MCX depth for self-occlusion.
-    # NOTE: node_depths from project_nodes_to_detector are computed as
-    # D - (z_node - cz) = D - z_node + cz, while depth_map from step 1 is
-    # D - z_world (since vcw=0). The comparison below handles this via
-    # the epsilon tolerance: node is visible if its depth is within
-    # epsilon of the MCX-reported front surface depth.
+    # Both depth_map (step 1) and node_depth (project_nodes_to_detector) are in the
+    # same grid-centered camera frame, so direct comparison with epsilon tolerance works.
     visible_idx = camera.get_visible_surface_nodes_from_mcx_depth(
         node_coords,
         node_normals,
