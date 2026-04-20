@@ -1,0 +1,65 @@
+P1-dorsal:
+  pos_mm:
+  - -1.6
+  - 2.4
+  - 5.8
+  best_angle: 0
+  original_pos_mm:
+  - -0.6
+  - 2.4
+  - 5.8
+  original_label: 0
+  original_organ: air
+  correction_action: pushed_1.0mm
+P2-left:
+  pos_mm:
+  - -8.0
+  - 1.9
+  - 1.0
+  best_angle: 90
+  original_pos_mm:
+  - -8.0
+  - 2.4
+  - 1.0
+  original_label: 0
+  original_organ: air
+  correction_action: pushed_0.5mm
+P3-right:
+  pos_mm:
+  - 6.8
+  - 2.9
+  - 1.0
+  best_angle: -90
+  original_pos_mm:
+  - 6.8
+  - 2.4
+  - 1.0
+  original_label: 0
+  original_organ: air
+  correction_action: pushed_0.5mm
+P4-dorsal-lat:
+  pos_mm:
+  - -6.8
+  - 2.4
+  - 5.8
+  best_angle: -30
+  original_pos_mm:
+  - -6.3
+  - 2.4
+  - 5.8
+  original_label: 0
+  original_organ: air
+  correction_action: pushed_0.5mm
+P5-ventral:
+  pos_mm:
+  - -0.6
+  - 2.4
+  - -3.8
+  best_angle: 180
+  original_pos_mm:
+  - -0.6
+  - 2.4
+  - -3.8
+  original_label: 1
+  original_organ: soft_tissue
+  correction_action: none
