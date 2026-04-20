@@ -57,7 +57,7 @@ def get_projections(atlas, fluence, angle):
 
     proj_green = render_green_surface_projection(
         GT_POS,
-        fluence > 0,
+        atlas > 0,
         angle,
         camera_distance_mm=200.0,
         fov_mm=50.0,
