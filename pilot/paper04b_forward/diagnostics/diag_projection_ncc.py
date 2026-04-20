@@ -78,7 +78,7 @@ def main():
 
         proj_green = render_green_surface_projection(
             GT_POS,
-            atlas > 0,
+            fluence > 0,
             angle,
             tissue_params=tissue_params,
             voxel_size_mm=VOXEL_SIZE_MM,
