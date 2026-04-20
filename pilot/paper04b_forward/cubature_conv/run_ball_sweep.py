@@ -12,12 +12,7 @@ from numpy.polynomial.legendre import leggauss
 from .config import OPTICAL, BALL_RADII_MM, BALL_D_DELTAS
 from .green import G_inf
 from .closed_form_ball import closed_form_ball_response
-
-
-def compute_ncc(a: np.ndarray, b: np.ndarray) -> float:
-    a = a - a.mean()
-    b = b - b.mean()
-    return float(np.sum(a * b) / (np.sqrt(np.sum(a**2) * np.sum(b**2)) + 1e-10))
+from shared.metrics import ncc
 
 
 def compute_rel_l1(a: np.ndarray, b: np.ndarray) -> float:

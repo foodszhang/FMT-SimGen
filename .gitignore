@@ -89,3 +89,6 @@ pilot/**/*.png
 
 # Temporary debug files
 pilot/**/_tmp_*.py
+
+# P5-ventral cache
+pilot/paper04b_forward/results/diag_cache/*.npy

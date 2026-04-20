@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config import OPTICAL
 from shared.green import G_inf
 from shared.direct_path import is_direct_path, get_direct_views_for_source
+from shared.metrics import ncc_log
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -138,14 +139,13 @@ def compute_closed_form_at_vertices(
     return G_inf(r, OPTICAL).astype(np.float32)
 
 
-def compute_ncc(phi_mcx: np.ndarray, phi_closed: np.ndarray, mask: np.ndarray) -> float:
+def _compute_ncc_with_mask(
+    phi_mcx: np.ndarray, phi_closed: np.ndarray, mask: np.ndarray
+) -> float:
     valid = mask & (phi_mcx > 0) & (phi_closed > 0)
     if np.sum(valid) < 10:
         return 0.0
-
-    log_mcx = np.log10(phi_mcx[valid] + 1e-20)
-    log_closed = np.log10(phi_closed[valid] + 1e-20)
-    return float(np.corrcoef(log_mcx, log_closed)[0, 1])
+    return ncc_log(phi_mcx[valid], phi_closed[valid])
 
 
 def main():
@@ -217,8 +217,8 @@ def main():
         )
         phi_closed = compute_closed_form_at_vertices(vertices_mm, source_pos)
 
-        ncc_all = compute_ncc(phi_mcx, phi_closed, valid_in_bounds)
-        ncc_direct = compute_ncc(
+        ncc_all = _compute_ncc_with_mask(phi_mcx, phi_closed, valid_in_bounds)
+        ncc_direct = _compute_ncc_with_mask(
             phi_mcx, phi_closed, valid_in_bounds & is_direct_vertex
         )
 

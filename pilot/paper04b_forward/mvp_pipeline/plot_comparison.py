@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "e1b_atlas_mcx_v2"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import matplotlib
@@ -16,6 +17,7 @@ from surface_projection import (
     green_infinite_point_source_on_surface,
 )
 from source_quadrature import sample_uniform
+from shared.metrics import ncc, ncc_log
 
 # Archived parameters
 VOXEL_SIZE_MM = 0.4
@@ -96,18 +98,18 @@ ax.set_yscale("log")
 ax.set_xlabel("Green")
 ax.set_ylabel("MCX")
 ax.plot([1e-5, 1e-2], [1e-5, 1e-2], "r--", alpha=0.5, label="y=x")
-ncc = np.corrcoef(
-    np.log10(my_green[valid] + 1e-10), np.log10(archived_mcx[valid] + 1e-10)
-)[0, 1]
+ncc_log_val = ncc_log(my_green[valid], archived_mcx[valid])
+ncc_linear = ncc(my_green[valid], archived_mcx[valid])
 k = archived_mcx[valid].sum() / my_green[valid].sum()
-ax.set_title(f"NCC(log)={ncc:.4f}, k={k:.2e}")
+ax.set_title(f"NCC(log)={ncc_log_val:.4f}, NCC(linear)={ncc_linear:.4f}\nk={k:.2e}")
 ax.legend()
 
 plt.tight_layout()
 output_path = "pilot/paper04b_forward/mvp_pipeline/results/m1_full_comparison.png"
 plt.savefig(output_path, dpi=150, bbox_inches="tight")
 print(f"Saved to: {output_path}")
-print(f"NCC (log space): {ncc:.4f}")
+print(f"NCC (linear): {ncc_linear:.4f}")
+print(f"NCC (log):    {ncc_log_val:.4f}")
 print(f"k (sum ratio): {k:.2e}")
 
 # Print summary

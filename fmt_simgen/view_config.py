@@ -62,6 +62,139 @@ class TurntableCamera:
             f"detector={self.detector_resolution}, fov={self.fov_mm}mm"
         )
 
+    def project_nodes_to_detector(
+        self,
+        node_coords: np.ndarray,
+        angle_deg: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Project node coordinates onto detector plane at a given angle.
+
+        Uses the same orthographic projection geometry as MCX:
+        camera at D*(sinθ, 0, cosθ), looking toward origin along -Z.
+        Image axes: U = world+X (right), V = world+Y (anterior on top).
+
+        Parameters
+        ----------
+        node_coords : np.ndarray
+            Node coordinates [N×3] in mm (world/trunk-local frame).
+        angle_deg : float
+            Rotation angle in degrees.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+            (u_px, v_px, depth) for each node:
+            - u_px: detector X pixel index [N], -1 if out of FOV
+            - v_px: detector Y pixel index [N], -1 if out of FOV
+            - depth: camera-frame depth = D - z_rot [N]
+        """
+        θ = np.deg2rad(angle_deg)
+        D = self.camera_distance_mm
+
+        # Rotate nodes around Y axis (same as MCX)
+        cos_t = np.cos(θ)
+        sin_t = np.sin(θ)
+        x_rot = node_coords[:, 0] * cos_t + node_coords[:, 2] * sin_t
+        y_rot = node_coords[:, 1]  # Y unchanged
+        z_rot = -node_coords[:, 0] * sin_t + node_coords[:, 2] * cos_t
+
+        # Camera-frame depth: positive = in front of camera
+        depth = D - z_rot
+
+        # Orthographic projection: (x_rot, y_rot) → detector (U, V)
+        u = x_rot   # world +X → detector right
+        v = y_rot   # world +Y → detector up
+
+        # Pixel indices
+        half_fov = self.fov_mm / 2.0
+        w_px, h_px = self.detector_resolution
+        u_px = ((u + half_fov) / self.fov_mm * w_px).astype(int)
+        v_px = ((v + half_fov) / self.fov_mm * h_px).astype(int)
+
+        # Mark out-of-FOV
+        u_px = np.where((u >= -half_fov) & (u < half_fov), u_px, -1)
+        v_px = np.where((v >= -half_fov) & (v < half_fov), v_px, -1)
+
+        return u_px, v_px, depth
+
+    def get_visible_surface_nodes_from_mcx_depth(
+        self,
+        node_coords: np.ndarray,
+        node_normals: np.ndarray,
+        depth_map: np.ndarray,
+        angle_deg: float,
+        depth_tolerance_mm: float = 0.5,
+    ) -> np.ndarray:
+        """Get visible surface nodes using MCX depth_map for self-occlusion.
+
+        A node is visible if:
+        1. It is a surface node (non-zero normal)
+        2. Its normal faces the camera (dot(normal, view_dir) > 0)
+        3. It is not platform-occluded
+        4. Its depth in camera frame is <= depth_map[pv, pu] + tolerance
+           (i.e., it is at or shallower than the frontmost MCX voxel,
+           so it is not fully occluded by tissue in front)
+
+        This reuses the MCX fluence volume's depth_map — MCX already
+        accounts for photon transport and self-occlusion via Monte Carlo
+        simulation, giving physically correct surface visibility.
+
+        Parameters
+        ----------
+        node_coords : np.ndarray
+            All node coordinates [N×3] in mm (trunk-local/world frame).
+        node_normals : np.ndarray
+            Surface normals [N×3].
+        depth_map : np.ndarray
+            MCX depth_map [H×W] in camera frame (mm). depth_map[pv, pu] is
+            the depth of the shallowest non-zero fluence voxel at that pixel.
+            Set pixel to inf if no fluence.
+        angle_deg : float
+            Rotation angle in degrees.
+        depth_tolerance_mm : float
+            Tolerance for depth comparison (default 0.5mm ≈ 2-3 voxels).
+            A node is visible if its depth is within this of depth_map.
+
+        Returns
+        -------
+        np.ndarray
+            Indices of visible surface nodes.
+        """
+        view_dir = self.get_view_direction(angle_deg)
+
+        # 1. Surface node mask
+        is_surface = np.linalg.norm(node_normals, axis=1) > 1e-6
+
+        # 2. Normal-facing check
+        facing_camera = np.dot(node_normals, view_dir) > 0
+
+        # 3. Platform occlusion
+        if self.platform_occlusion:
+            platform_occl = self._is_occluded_by_platform(node_coords)
+        else:
+            platform_occl = np.zeros(len(node_coords), dtype=bool)
+
+        # 4. Project to detector
+        u_px, v_px, depth = self.project_nodes_to_detector(node_coords, angle_deg)
+
+        w_px, h_px = self.detector_resolution
+        in_bounds = (u_px >= 0) & (u_px < w_px) & (v_px >= 0) & (v_px < h_px)
+
+        # 5. MCX self-occlusion: compare node depth to depth_map
+        #    A node is occluded (not visible) if depth > depth_map[pv, pu] + tolerance
+        #    (i.e., there is tissue in front of it)
+        #    A node is visible if depth <= depth_map[pv, pu] + tolerance
+        mcx_occluded = np.zeros(len(node_coords), dtype=bool)
+        if in_bounds.any():
+            mcx_depth_at_node = depth_map[v_px[in_bounds], u_px[in_bounds]]
+            is_finite = np.isfinite(mcx_depth_at_node)
+            # Occluded if: depth is MORE than tolerance behind the frontmost MCX voxel
+            behind_front = depth[in_bounds] - mcx_depth_at_node
+            mcx_occluded[in_bounds] = is_finite & (behind_front > depth_tolerance_mm)
+
+        visible = is_surface & facing_camera & ~platform_occl & ~mcx_occluded
+        return np.where(visible)[0].astype(np.int32)
+
     def compute_surface_normals(
         self,
         nodes: np.ndarray,

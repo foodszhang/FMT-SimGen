@@ -142,15 +142,35 @@ def compute_zbuffer_visibility(nodes_all, surf_coords, surf_normals, angle_deg,
     return visible
 
 
-# Precompute visibility for all angles
+# Precompute visibility for all angles using MCX depth_map (self-occlusion)
 unique_surf = np.unique(sf)
 surf_coords = nodes[unique_surf]
 surf_normals = camera.compute_surface_normals(nodes, sf)
 visible_per_angle = {}
+
+# Load depth_map from sample_0000 (representative fluence geometry)
+sp0 = samples[0]
+proj0 = np.load(sp0 / "proj.npz") if (sp0 / "proj.npz").exists() else None
+
 for angle in angles:
-    vis = compute_zbuffer_visibility(nodes, surf_coords, surf_normals, angle)
-    visible_per_angle[angle] = vis
-    print(f"  Angle {angle:4d}°: {vis.sum()}/{len(surf_coords)} visible")
+    if proj0 is not None and f"depth_{angle}" in proj0:
+        depth_map = proj0[f"depth_{angle}"]
+        vis = camera.get_visible_surface_nodes_from_mcx_depth(
+            nodes, surf_normals, depth_map, angle, depth_tolerance_mm=0.5
+        )
+        # Map all-node indices → surface-coord indices
+        # unique_surf[i_surf] = node_index, so invert: node_index → i_surf
+        node_to_surf_idx = np.full(len(nodes), -1, dtype=int)
+        node_to_surf_idx[unique_surf] = np.arange(len(unique_surf))
+        vis_surf_idx = node_to_surf_idx[vis]
+        vis_mask = np.zeros(len(surf_coords), dtype=bool)
+        vis_mask[vis_surf_idx[vis_surf_idx >= 0]] = True
+        visible_per_angle[angle] = vis_mask
+    else:
+        # Fallback if no MCX depth_map
+        vis_mask = compute_zbuffer_visibility(nodes, surf_coords, surf_normals, angle)
+        visible_per_angle[angle] = vis_mask
+    print(f"  Angle {angle:4d}°: {visible_per_angle[angle].sum()}/{len(surf_coords)} visible")
 
 # Ventral view: camera from BELOW looking UP (+Z direction)
 # This simulates "imaging from abdomen" — shows which dorsal nodes are visible from below

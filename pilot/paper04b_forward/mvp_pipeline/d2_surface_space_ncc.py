@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config import OPTICAL
 from shared.green import G_inf
+from shared.metrics import ncc, ncc_log
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -138,21 +139,23 @@ def compute_metrics(
 ) -> dict:
     mask = valid & (phi_mcx > 0) & (phi_closed > 0)
     if np.sum(mask) < 10:
-        return {"ncc": 0.0, "k": 0.0, "n_valid": 0, "rmse": 0.0}
+        return {"ncc": 0.0, "ncc_log": 0.0, "k": 0.0, "n_valid": 0, "rmse": 0.0}
 
     mcx_vals = phi_mcx[mask]
     closed_vals = phi_closed[mask]
 
-    log_mcx = np.log10(mcx_vals + 1e-20)
-    log_closed = np.log10(closed_vals + 1e-20)
-    ncc = np.corrcoef(log_mcx, log_closed)[0, 1]
+    ncc_linear = ncc(mcx_vals, closed_vals)
+    ncc_log_val = ncc_log(mcx_vals, closed_vals)
 
     k = np.sum(mcx_vals) / np.sum(closed_vals)
 
+    log_mcx = np.log10(mcx_vals + 1e-20)
+    log_closed = np.log10(closed_vals + 1e-20)
     rmse = np.sqrt(np.mean((log_mcx - log_closed) ** 2))
 
     return {
-        "ncc": float(ncc),
+        "ncc": float(ncc_linear),
+        "ncc_log": float(ncc_log_val),
         "k": float(k),
         "n_valid": int(np.sum(mask)),
         "rmse": float(rmse),

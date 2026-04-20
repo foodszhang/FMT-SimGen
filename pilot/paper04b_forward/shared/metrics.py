@@ -8,6 +8,7 @@ import numpy as np
 
 
 def ncc(a: np.ndarray, b: np.ndarray) -> float:
+    """Linear-space Pearson correlation coefficient (primary metric)."""
     a = a.flatten().astype(np.float64)
     b = b.flatten().astype(np.float64)
     a_mean = np.mean(a)
@@ -19,7 +20,18 @@ def ncc(a: np.ndarray, b: np.ndarray) -> float:
     return float(num / den)
 
 
+def ncc_log(a: np.ndarray, b: np.ndarray, eps: float = 1e-20) -> float:
+    """Log-space NCC (auxiliary metric only). Do NOT use for paper primary tables."""
+    a = np.log10(np.asarray(a).flatten().astype(np.float64) + eps)
+    b = np.log10(np.asarray(b).flatten().astype(np.float64) + eps)
+    a_mean, b_mean = np.mean(a), np.mean(b)
+    num = np.sum((a - a_mean) * (b - b_mean))
+    den = np.sqrt(np.sum((a - a_mean) ** 2) * np.sum((b - b_mean) ** 2))
+    return float(num / den) if den > 1e-12 else 0.0
+
+
 def scale_factor_k(a: np.ndarray, b: np.ndarray) -> float:
+    """Linear scale factor: sum(a) / sum(b). Optimal for linear-MSE loss."""
     a = a.flatten().astype(np.float64)
     b = b.flatten().astype(np.float64)
     sum_a = np.sum(a)
@@ -27,6 +39,23 @@ def scale_factor_k(a: np.ndarray, b: np.ndarray) -> float:
     if sum_b < 1e-12:
         return 0.0
     return float(sum_a / sum_b)
+
+
+def scale_factor_logmse(
+    meas: np.ndarray, forward: np.ndarray, eps: float = 1e-20
+) -> float:
+    """Optimal scale for log-MSE loss (geomean).
+
+    For loss = mean((log(m) - log(s*f))^2), optimal s = 10^mean(log(m) - log(f)).
+    """
+    meas = np.asarray(meas).flatten().astype(np.float64)
+    forward = np.asarray(forward).flatten().astype(np.float64)
+    valid = (meas > 0) & (forward > 0)
+    if np.sum(valid) < 10:
+        return 0.0
+    return float(
+        10 ** np.mean(np.log10(meas[valid] + eps) - np.log10(forward[valid] + eps))
+    )
 
 
 def rmse(a: np.ndarray, b: np.ndarray) -> float:
