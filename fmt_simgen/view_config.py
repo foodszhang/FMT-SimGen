@@ -180,17 +180,13 @@ class TurntableCamera:
         w_px, h_px = self.detector_resolution
         in_bounds = (u_px >= 0) & (u_px < w_px) & (v_px >= 0) & (v_px < h_px)
 
-        # 5. MCX self-occlusion: compare node depth to depth_map
-        #    A node is occluded (not visible) if depth > depth_map[pv, pu] + tolerance
-        #    (i.e., there is tissue in front of it)
-        #    A node is visible if depth <= depth_map[pv, pu] + tolerance
+        # 5. MCX self-occlusion: inf pixel = no photon reaches there = occluded
+        #    finite pixel = some photon reaches there = surface is visible
         mcx_occluded = np.zeros(len(node_coords), dtype=bool)
         if in_bounds.any():
             mcx_depth_at_node = depth_map[v_px[in_bounds], u_px[in_bounds]]
-            is_finite = np.isfinite(mcx_depth_at_node)
-            # Occluded if: depth is MORE than tolerance behind the frontmost MCX voxel
-            behind_front = depth[in_bounds] - mcx_depth_at_node
-            mcx_occluded[in_bounds] = is_finite & (behind_front > depth_tolerance_mm)
+            # Occluded if depth_map is inf (no photon reaches that pixel)
+            mcx_occluded[in_bounds] = ~np.isfinite(mcx_depth_at_node)
 
         visible = is_surface & facing_camera & ~platform_occl & ~mcx_occluded
         return np.where(visible)[0].astype(np.int32)

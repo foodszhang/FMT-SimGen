@@ -156,7 +156,7 @@ for angle in angles:
     if proj0 is not None and f"depth_{angle}" in proj0:
         depth_map = proj0[f"depth_{angle}"]
         vis = camera.get_visible_surface_nodes_from_mcx_depth(
-            nodes, surf_normals, depth_map, angle, depth_tolerance_mm=0.5
+            nodes, surf_normals, depth_map, angle, depth_tolerance_mm=15.0
         )
         # Map all-node indices → surface-coord indices
         # unique_surf[i_surf] = node_index, so invert: node_index → i_surf

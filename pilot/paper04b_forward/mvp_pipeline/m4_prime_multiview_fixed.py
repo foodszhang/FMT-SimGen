@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config import OPTICAL
 from shared.green import G_inf
 from shared.direct_path import get_direct_views_for_source, is_direct_path_vertex
+from shared.metrics import scale_factor_logmse
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -66,7 +67,7 @@ def loss_multiview(params, vertices, measurements, view_angles, direct_masks):
         if np.sum(valid) < 10:
             continue
 
-        scale_i = float(np.sum(measurement[valid]) / np.sum(forward[valid]))
+        scale_i = scale_factor_logmse(measurement[valid], forward[valid])
 
         log_meas = np.log10(measurement[valid] + 1e-20)
         log_fwd = np.log10(scale_i * forward[valid] + 1e-20)

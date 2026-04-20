@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config import OPTICAL
 from shared.green import G_inf
+from shared.metrics import scale_factor_logmse
 
 VOXEL_SIZE_MM = 0.4
 VOLUME_SHAPE_XYZ = (95, 100, 52)
@@ -89,7 +90,7 @@ def loss_multi_source(params, vertices, measurement, direct_mask, n_sources, opt
     if np.sum(valid) < 10:
         return 1e10
 
-    scale = np.sum(measurement[valid]) / np.sum(forward[valid])
+    scale = scale_factor_logmse(measurement[valid], forward[valid])
     log_meas = np.log10(measurement[valid] + 1e-20)
     log_fwd = np.log10(scale * forward[valid] + 1e-20)
 

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from shared.config import OPTICAL
 from shared.green import G_inf
 from shared.direct_path import is_direct_path_vertex, get_direct_views_for_source_v2
+from shared.metrics import scale_factor_logmse
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -96,7 +97,7 @@ def loss_surface(params, vertices, phi_mcx, direct_mask, optical):
     if np.sum(valid) < 50:
         return 1e10
 
-    scale = float(np.sum(phi_mcx[valid]) / np.sum(forward[valid]))
+    scale = scale_factor_logmse(phi_mcx[valid], forward[valid])
     log_meas = np.log10(phi_mcx[valid] + 1e-20)
     log_fwd = np.log10(scale * forward[valid] + 1e-20)
 
