@@ -4,6 +4,9 @@ import json, sys
 from pathlib import Path
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_SIZE_MM
+
 # ── 1. Mesh 3D viewer (matplotlib) ───────────────────────────────────────────
 def mesh_html():
     mesh = np.load("assets/mesh/mesh.npz")
@@ -26,8 +29,8 @@ def mesh_html():
     ax.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], s=0.5, c="gray", alpha=0.2)
 
     # MCX bbox wireframe
-    cx, cy, cz = 19.0, 20.0, 10.4
-    hx, hy, hz = 19.0, 20.0, 10.4
+    cx, cy, cz = VOLUME_CENTER_WORLD
+    hx, hy, hz = TRUNK_SIZE_MM / 2.0
     bbox_corners = np.array([
         [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
         [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

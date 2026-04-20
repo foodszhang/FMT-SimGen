@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fmt_simgen.mcx_projection import load_jnii_volume
 from fmt_simgen.view_config import TurntableCamera
+from fmt_simgen.frame_contract import VOXEL_SIZE_MM, TRUNK_GRID_SHAPE
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +272,10 @@ def check_spatial_alignment(
 
     fov_mm = view_config.get("fov_mm", 50.0)
     det_w, det_h = view_config.get("detector_resolution", [256, 256])
-    voxel_size = 0.2  # mm, fixed for MCX volume
+    voxel_size = VOXEL_SIZE_MM  # mm
 
     # MCX volume shape [X=190, Y=200, Z=104]
-    nx, ny, nz = 190, 200, 104
+    nx, ny, nz = TRUNK_GRID_SHAPE
     vol_center_offset = np.array([
         voxel_size * nx / 2,
         voxel_size * ny / 2,
@@ -374,8 +375,8 @@ def check_surface_overlap(
         cfg = yaml.safe_load(f)
     mcx_cfg = cfg.get("mcx", {})
     trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
-    voxel_size = mcx_cfg.get("voxel_size_mm", 0.2)
-    nx, ny, nz = mcx_cfg.get("volume_shape", [190, 200, 104])
+    voxel_size = VOXEL_SIZE_MM
+    nx, ny, nz = mcx_cfg.get("volume_shape", list(TRUNK_GRID_SHAPE))
     volume_center_world = trunk_offset + np.array([nx, ny, nz]) * voxel_size / 2
 
     # world → centered (same transform as project_volume_reference)

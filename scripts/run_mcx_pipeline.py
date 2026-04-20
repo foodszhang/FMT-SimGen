@@ -40,6 +40,7 @@ from fmt_simgen.mcx_projection import project_sample, load_jnii_volume
 from fmt_simgen.mcx_runner import detect_mcx_executable, run_mcx_single
 from fmt_simgen.mcx_config import generate_mcx_config
 from fmt_simgen.view_config import TurntableCamera
+from fmt_simgen.frame_contract import VOXEL_SIZE_MM
 
 
 logging.basicConfig(
@@ -132,7 +133,7 @@ def run_projection_single(
     sample_dir: Path,
     camera: TurntableCamera,
     skip_existing: bool = True,
-    voxel_size_mm: float = 0.2,
+    voxel_size_mm: float = VOXEL_SIZE_MM,
     volume_center_world: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[str, bool, str]:
     """Run projection for a single sample (for parallel execution)."""
@@ -222,7 +223,7 @@ def main() -> None:
     shared_cfg = load_shared_config()
     view_cfg = load_view_config()
     camera = TurntableCamera(view_cfg)
-    voxel_size_mm = shared_cfg.get("mcx", {}).get("voxel_size_mm", 0.2)
+    voxel_size_mm = shared_cfg.get("mcx", {}).get("voxel_size_mm", VOXEL_SIZE_MM)
 
     # Compute MCX trunk volume center in world coordinates (mm)
     # The reference projection centers at (nx/2, ny/2, nz/2) in voxel space,

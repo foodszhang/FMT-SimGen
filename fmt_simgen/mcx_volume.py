@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import yaml
 
+from fmt_simgen.frame_contract import TRUNK_OFFSET_ATLAS_MM, TRUNK_SIZE_MM
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,8 +170,15 @@ def crop_and_downsample(
     cropped = labels[:, y_start:y_end, :]
     logger.info(f"Cropped shape (XYZ): {cropped.shape}")
 
-    # Downsample by taking every Nth voxel
-    ds = cropped[::downsample_factor, ::downsample_factor, ::downsample_factor]
+    # Majority-vote 2x2x2 block downsample
+    from scipy.stats import mode
+    bs = downsample_factor
+    shape = cropped.shape
+    new_shape = (shape[0] // bs, bs, shape[1] // bs, bs, shape[2] // bs, bs)
+    vol_blocks = cropped.reshape(new_shape).transpose(0, 2, 4, 1, 3, 5)
+    blocks_flat = vol_blocks.reshape(vol_blocks.shape[:3] + (bs**3,))
+    mode_result, _ = mode(blocks_flat, axis=-1, keepdims=False)
+    ds = mode_result.astype(np.uint8)
     logger.info(f"Downsampled shape (XYZ): {ds.shape}")
 
     return ds
@@ -198,13 +207,14 @@ def prepare_mcx_volume(
         material_list is list of dicts with mua, mus, g, n, tag, name.
     """
     mcx_config = config.get("mcx", {})
-    trunk_crop = mcx_config.get("trunk_crop", {})
-    y_start = trunk_crop.get("y_start", 300)
-    y_end = trunk_crop.get("y_end", 700)
     downsample_factor = mcx_config.get("downsample_factor", 2)
 
     # Load atlas
     labels, voxel_size = load_atlas_labels(atlas_path)
+
+    # Y crop from TRUNK_OFFSET_ATLAS_MM (single source of truth)
+    y_start = int(np.round(TRUNK_OFFSET_ATLAS_MM[1] / voxel_size))
+    y_end = y_start + int(np.round(TRUNK_SIZE_MM[1] / voxel_size))
     original_shape = labels.shape
     logger.info(f"Original atlas shape: {original_shape}")
 

@@ -76,6 +76,7 @@ class MeshGenerator:
         voxel_size: float = 0.1,
         tissue_labels: Optional[np.ndarray] = None,
         downsample_factor: int = 8,
+        crop_to_trunk: bool = True,
     ) -> MeshData:
         """Generate tetrahedral mesh from atlas volume.
 
@@ -89,6 +90,9 @@ class MeshGenerator:
             Not used, kept for API compatibility.
         downsample_factor : int, default 8
             Downsampling factor for the volume.
+        crop_to_trunk : bool, default True
+            If True, crop mesh to trunk bounding box (for atlas-origin meshes).
+            If False, skip crop (for meshes already in trunk-local frame).
 
         Returns
         -------
@@ -157,7 +161,8 @@ class MeshGenerator:
         )
 
         # ── Crop to trunk region ───────────────────────────────────────────────
-        mesh_data = self._crop_to_trunk(mesh_data)
+        if crop_to_trunk:
+            mesh_data = self._crop_to_trunk(mesh_data)
 
         return mesh_data
 

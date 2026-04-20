@@ -4,6 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_SIZE_MM
 
 out = Path("output/visualizations"); out.mkdir(parents=True, exist_ok=True)
 
@@ -30,8 +33,8 @@ for tri in sf[::step]:
 ax.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], s=1, c="gray", alpha=0.15)
 
 # MCX volume bbox wireframe (trunk-local)
-cx, cy, cz = 19.0, 20.0, 10.4
-hx, hy, hz = 19.0, 20.0, 10.4
+cx, cy, cz = VOLUME_CENTER_WORLD
+hx, hy, hz = TRUNK_SIZE_MM / 2.0
 bbox_corners = np.array([
     [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
     [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

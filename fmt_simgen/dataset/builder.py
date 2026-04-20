@@ -29,6 +29,7 @@ from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
 from fmt_simgen.sampling.dual_sampler import DualSampler, VoxelGridConfig
 from fmt_simgen.view_config import TurntableCamera
+from fmt_simgen.frame_contract import VOXEL_SIZE_MM
 
 
 @dataclass
@@ -127,6 +128,7 @@ class DatasetBuilder:
             atlas_nodes = self._mesh_data.nodes.copy()
             matrix_file = self.fem_solver.save_system_matrix(str(mesh_path / "system_matrix"))
             self._write_frame_manifest()
+            self._verify_frame_consistency()
             print(f"Shared assets loaded (mesh re-saved in trunk-local frame)")
             return {"mesh": shared_mesh, "matrix": matrix_file}
 
@@ -152,6 +154,7 @@ class DatasetBuilder:
                     str(existing_matrix.parent / "system_matrix")
                 )
                 self._write_frame_manifest()
+                self._verify_frame_consistency()
                 return {
                     "mesh": existing_mesh,
                     "matrix": existing_matrix.parent / "system_matrix",
@@ -189,6 +192,9 @@ class DatasetBuilder:
         )
         self._write_frame_manifest()
         print(f"Shared assets saved to {mesh_path} (mesh in trunk-local mm)")
+
+        # ── U5: Frame consistency check ─────────────────────────────────────────
+        self._verify_frame_consistency()
 
         return {"mesh": mesh_file, "matrix": matrix_file}
 
@@ -266,6 +272,56 @@ class DatasetBuilder:
         self.fem_solver.load_system_matrix(str(matrix_prefix))
         print(f"  Loaded system matrices from {matrix_prefix}")
 
+    def _verify_frame_consistency(self) -> None:
+        """U5: Verify mesh and mcx_volume are in the same trunk-local frame.
+
+        Checks that mesh node bbox and mcx_volume body bbox agree within 2mm
+        per axis. This prevents frame regress silently.
+        """
+        from fmt_simgen.frame_contract import (
+            VOXEL_SIZE_MM, TRUNK_SIZE_MM, assert_in_trunk_bbox,
+        )
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Load mcx_volume_trunk.bin (ZYX order)
+        mcx_bin = Path("output/shared/mcx_volume_trunk.bin")
+        if not mcx_bin.exists():
+            logger.warning("mcx_volume_trunk.bin not found — skipping frame check")
+            return
+
+        mcx_raw = np.fromfile(mcx_bin, dtype=np.uint8)
+        mcx_zyx = mcx_raw.reshape((104, 200, 190))
+        mcx_xyz = mcx_zyx.transpose(2, 1, 0)  # → (190, 200, 104) XYZ
+
+        # mcx body voxel indices → trunk-local mm
+        mcx_body_idx = np.argwhere(mcx_xyz > 0)  # (M, 3) XYZ voxel indices
+        mcx_body_mm = mcx_body_idx.astype(np.float64) * VOXEL_SIZE_MM
+
+        mesh_nodes = self._mesh_data.nodes  # (N, 3) trunk-local mm
+
+        logger.info("=== U5 Frame Consistency Check ===")
+        for axis, name in enumerate("XYZ"):
+            m_lo = float(mesh_nodes[:, axis].min())
+            m_hi = float(mesh_nodes[:, axis].max())
+            v_lo = float(mcx_body_mm[:, axis].min())
+            v_hi = float(mcx_body_mm[:, axis].max())
+            diff_lo = abs(m_lo - v_lo)
+            diff_hi = abs(m_hi - v_hi)
+            logger.info(
+                f"  {name}: mesh [{m_lo:.2f}, {m_hi:.2f}] vs "
+                f"mcx [{v_lo:.2f}, {v_hi:.2f}] "
+                f"(diff_lo={diff_lo:.2f}, diff_hi={diff_hi:.2f})"
+            )
+            assert diff_lo < 2.0 and diff_hi < 2.0, (
+                f"Frame mismatch on {name}: "
+                f"mesh=[{m_lo:.2f},{m_hi:.2f}] mcx=[{v_lo:.2f},{v_hi:.2f}]"
+            )
+
+        assert_in_trunk_bbox(mesh_nodes, tol_mm=3.0)
+        assert_in_trunk_bbox(mcx_body_mm, tol_mm=0.5)
+        logger.info("✅ Frame consistency verified: mesh ↔ mcx_volume aligned within 2mm")
+
     def _write_frame_manifest(self) -> None:
         """Write frame_manifest.json with authoritative frame metadata.
 
@@ -276,7 +332,7 @@ class DatasetBuilder:
         mcx_cfg = self.config.get("mcx", {})
         trunk_offset = list(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
         vs_zyx = mcx_cfg.get("volume_shape", [104, 200, 190])
-        vx = float(mcx_cfg.get("voxel_size_mm", 0.2))
+        vx = float(mcx_cfg.get("voxel_size_mm", VOXEL_SIZE_MM))
         bbox_max = [vs_zyx[2] * vx, vs_zyx[1] * vx, vs_zyx[0] * vx]
 
         # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
@@ -295,7 +351,7 @@ class DatasetBuilder:
         else:
             fem_mesh_frame = "mcx_trunk_local_mm"
 
-        voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
+        voxel_spacing = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
         roi_center = np.array(bbox_max) / 2
         offset = (roi_center - roi_size / 2).tolist()
@@ -355,7 +411,7 @@ class DatasetBuilder:
 
         self._ensure_setup()
 
-        voxel_spacing = self.dataset_config.get("voxel_spacing", 0.2)
+        voxel_spacing = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
 
         # Experiment-isolated output: data/{experiment_name}/samples/

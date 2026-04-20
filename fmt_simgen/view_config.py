@@ -20,6 +20,8 @@ from typing import Optional
 
 import numpy as np
 
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,7 @@ class TurntableCamera:
         # For the trunk volume: center = (19.0, 20.0, 10.4) mm,
         # which is the midpoint of MCX bbox [0,38]×[0,40]×[0,20.8].
         self.volume_center_world: np.ndarray = np.array(
-            config.get("volume_center_world", [19.0, 20.0, 10.4]), dtype=np.float64
+            config.get("volume_center_world", VOLUME_CENTER_WORLD), dtype=np.float64
         )
 
         logger.info(
