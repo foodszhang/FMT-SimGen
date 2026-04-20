@@ -38,6 +38,7 @@ from fmt_simgen.frame_contract import (
     TRUNK_GRID_SHAPE,
     VOXEL_SIZE_MM,
 )
+from fmt_simgen.mcx_volume import ORIGINAL_TO_CC_LABEL
 
 assert VS_TRUNK == VOXEL_SIZE_MM  # sanity check
 
@@ -115,6 +116,12 @@ def main():
 
     # Crop + downsample
     trunk = crop_and_downsample(atlas_labels)
+
+    # Apply label mapping: Digimouse original labels → CC Task Packet classes (0-9)
+    trunk_cc = np.zeros_like(trunk)
+    for orig_label, cc_label in ORIGINAL_TO_CC_LABEL.items():
+        trunk_cc[trunk == orig_label] = cc_label
+    trunk = trunk_cc
 
     # Save trunk_volume.npz
     np.savez_compressed(

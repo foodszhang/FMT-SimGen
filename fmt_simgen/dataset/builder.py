@@ -29,7 +29,13 @@ from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
 from fmt_simgen.sampling.dual_sampler import DualSampler, VoxelGridConfig
 from fmt_simgen.view_config import TurntableCamera
-from fmt_simgen.frame_contract import VOXEL_SIZE_MM
+from fmt_simgen.frame_contract import (
+    TRUNK_OFFSET_ATLAS_MM,
+    TRUNK_SIZE_MM,
+    VOXEL_SIZE_MM,
+    TRUNK_GRID_SHAPE,
+    VOLUME_CENTER_WORLD,
+)
 
 
 @dataclass
@@ -323,52 +329,72 @@ class DatasetBuilder:
         logger.info("✅ Frame consistency verified: mesh ↔ mcx_volume aligned within 2mm")
 
     def _write_frame_manifest(self) -> None:
-        """Write frame_manifest.json with authoritative frame metadata.
+        """Write frame_manifest.json sourced entirely from frame_contract.py.
+
+        THIS is the single source of truth for FMT-SimGen → DU2Vox artifact interface.
+        All frame constants derive from fmt_simgen.frame_contract — NOT from config YAML.
+        DU2Vox reads this file via du2vox.utils.frame.get_frame_constants().
 
         Manifest lives in output/shared/ (dataset shared directory).
         mesh.npz is saved in mcx_trunk_local_mm frame (rebase done at write time).
         Also syncs to assets/mesh/ (where the mesh files live).
         """
-        mcx_cfg = self.config.get("mcx", {})
-        trunk_offset = list(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
-        vs_zyx = mcx_cfg.get("volume_shape", [104, 200, 190])
-        vx = float(mcx_cfg.get("voxel_size_mm", VOXEL_SIZE_MM))
-        bbox_max = [vs_zyx[2] * vx, vs_zyx[1] * vx, vs_zyx[0] * vx]
+        # ── Source of truth: frame_contract.py ──────────────────────────────────
+        trunk_offset: np.ndarray = TRUNK_OFFSET_ATLAS_MM          # [0, 34, 0]
+        trunk_size: np.ndarray   = TRUNK_SIZE_MM                   # [38, 40, 20.8]
+        voxel_size: float        = VOXEL_SIZE_MM                  # 0.2
+        grid_shape_xyz: tuple    = TRUNK_GRID_SHAPE               # (190, 200, 104)
+        vol_center: np.ndarray   = VOLUME_CENTER_WORLD             # [19, 20, 10.4]
+        half_extents: np.ndarray = trunk_size / 2.0               # [19, 20, 10.4]
 
         # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
-        nodes_trunk = self._mesh_data.nodes.astype(np.float64)
+        nodes_trunk: np.ndarray = self._mesh_data.nodes.astype(np.float64)
 
         # Always use output/shared/ as the canonical manifest location
-        shared_dir = Path("output/shared")
-        manifest_path = shared_dir / "frame_manifest.json"
+        shared_dir: Path = Path("output/shared")
+        manifest_path: Path = shared_dir / "frame_manifest.json"
 
-        # Preserve existing frame if manifest already updated by load_mesh_data
+        # Preserve existing frame tag (load path may have updated it)
         if manifest_path.exists():
-            existing = json.loads(manifest_path.read_text())
-            fem_mesh_frame = existing.get("fem_mesh", {}).get(
-                "frame", "atlas_corner_mm"
+            existing: dict = json.loads(manifest_path.read_text())
+            fem_mesh_frame: str = existing.get("fem_mesh", {}).get(
+                "frame", "mcx_trunk_local_mm"
             )
         else:
             fem_mesh_frame = "mcx_trunk_local_mm"
 
-        voxel_spacing = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
-        roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
-        roi_center = np.array(bbox_max) / 2
-        offset = (roi_center - roi_size / 2).tolist()
-        shape_gt = [int(np.ceil(roi_size / voxel_spacing))] * 3
+        # gt voxel grid (per-sample, not frame-level — keep from dataset_config)
+        voxel_spacing: float = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
+        roi_size: float = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
+        roi_center: np.ndarray = trunk_size / 2.0
+        offset: list = (roi_center - roi_size / 2.0).tolist()
+        shape_gt: list = [int(np.ceil(roi_size / voxel_spacing))] * 3
 
-        manifest = {
-            "version": 1,
+        manifest: dict = {
+            "version": 2,
             "world_frame": "mcx_trunk_local_mm",
-            "atlas_to_world_offset_mm": trunk_offset,
+            "frame_contract": {
+                "trunk_offset_atlas_mm": trunk_offset.tolist(),
+                "trunk_size_mm": trunk_size.tolist(),
+                "voxel_size_mm": float(voxel_size),
+                "trunk_grid_shape_xyz": list(grid_shape_xyz),
+                "volume_center_world_mm": vol_center.tolist(),
+                "mcx_half_extents_mm": half_extents.tolist(),
+                "generated_by": "fmt_simgen.dataset.builder.build_shared_assets",
+                "frame_contract_version": "2026-04-20-U2-locked",
+            },
+            "atlas_to_world_offset_mm": trunk_offset.tolist(),  # legacy key
             "mcx_volume": {
-                "shape_xyz": [vs_zyx[2], vs_zyx[1], vs_zyx[0]],
-                "voxel_size_mm": vx,
-                "bbox_world_mm": {"min": [0, 0, 0], "max": bbox_max},
+                "shape_xyz": list(grid_shape_xyz),
+                "voxel_size_mm": float(voxel_size),
+                "bbox_world_mm": {
+                    "min": [0.0, 0.0, 0.0],
+                    "max": trunk_size.tolist(),
+                },
             },
             "fem_mesh": {
                 "file": "mesh.npz",
-                "frame": fem_mesh_frame,  # preserve load_mesh_data update
+                "frame": fem_mesh_frame,
                 "n_nodes": int(nodes_trunk.shape[0]),
                 "bbox_world_mm": {
                     "min": nodes_trunk.min(0).tolist(),
@@ -377,7 +403,7 @@ class DatasetBuilder:
             },
             "voxel_grid_gt": {
                 "shape": shape_gt,
-                "spacing_mm": voxel_spacing,
+                "spacing_mm": float(voxel_spacing),
                 "offset_world_mm": offset,
                 "frame": "mcx_trunk_local_mm",
             },

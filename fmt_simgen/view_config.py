@@ -396,3 +396,107 @@ class TurntableCamera:
             results[angle] = visible
             logger.info(f"Angle {angle:4d}°: {len(visible)} visible nodes")
         return results
+
+
+# ─── Standalone wrapper for QA / visibility computation ───────────────────────
+
+def get_visible_surface_nodes_from_mcx_depth(
+    node_coords: np.ndarray,
+    surface_faces: np.ndarray,
+    mask_xyz: np.ndarray,
+    angle_deg: float,
+    voxel_size: float,
+    volume_center_world: tuple[float, float, float],
+    epsilon: float = 0.5,
+) -> tuple[int, np.ndarray, np.ndarray]:
+    """Standalone wrapper: compute depth_map from mask, then return visible nodes.
+
+    This provides the same functionality as TurntableCamera's instance method
+    ``get_visible_surface_nodes_from_mcx_depth`` but as a one-shot function
+    that internally computes the depth map from an MCX trunk-mask volume.
+
+    Parameters
+    ----------
+    node_coords : np.ndarray [N×3]
+        Node coordinates in mm (trunk-local frame).
+    surface_faces : np.ndarray [F×3]
+        Surface triangle vertex indices.
+    mask_xyz : np.ndarray [X×Y×Z]
+        Binary tissue mask (e.g. mcx_volume > 0).
+    angle_deg : float
+        Camera rotation angle in degrees.
+    voxel_size : float
+        MCX voxel size in mm.
+    volume_center_world : tuple[float, float, float]
+        Physical center of the MCX volume in trunk-local mm, e.g. (19.0, 20.0, 10.4).
+    epsilon : float
+        Bilateral depth tolerance in mm (default 0.5).
+
+    Returns
+    -------
+    tuple[int, np.ndarray, np.ndarray]
+        (finite_px, visible_mask, depth_map) where:
+        - finite_px: number of detector pixels with finite depth
+        - visible_mask: boolean array [N] — True for visible surface nodes
+        - depth_map: the computed depth map [H×W] in mm
+    """
+    from fmt_simgen.mcx_projection import project_volume_reference
+
+    # Camera parameters for TurntableCamera
+    camera_distance_mm = 200.0
+    fov_mm = 80.0
+    detector_resolution = (256, 256)
+
+    # 1. Compute depth map from tissue mask.
+    #
+    # IMPORTANT: Use volume_center_world=(0,0,0) here because the mask volume
+    # is already in trunk-local frame (corner at origin). project_volume_reference
+    # shifts by -volume_center_world before computing camera depth, so passing
+    # (0,0,0) gives depth = D - z_world (no offset), which correctly represents
+    # the physical depth from camera to the tissue front along each ray.
+    # Using volume_center_world=(19,20,10.4) would offset depth by +10.4mm,
+    # which does NOT match MCX actual depth.
+    _, depth_map = project_volume_reference(
+        mask_xyz.astype(np.uint8),
+        angle_deg=angle_deg,
+        camera_distance=camera_distance_mm,
+        fov_mm=fov_mm,
+        detector_resolution=detector_resolution,
+        voxel_size_mm=voxel_size,
+        volume_center_world=(0.0, 0.0, 0.0),
+    )
+
+    finite_px = int(np.isfinite(depth_map).sum())
+
+    # 2. Compute surface normals using the TurntableCamera.
+    # The camera uses volume_center_world to center node coords before rotation,
+    # which is needed for correct per-angle node→detector projection.
+    camera_cfg = dict(
+        volume_center_world=volume_center_world,
+        camera_distance_mm=camera_distance_mm,
+        fov_mm=fov_mm,
+        detector_resolution=detector_resolution,
+    )
+    camera = TurntableCamera(camera_cfg)
+    node_normals = camera.compute_surface_normals(node_coords, surface_faces)
+
+    # 3. Get visible surface nodes using MCX depth for self-occlusion.
+    # NOTE: node_depths from project_nodes_to_detector are computed as
+    # D - (z_node - cz) = D - z_node + cz, while depth_map from step 1 is
+    # D - z_world (since vcw=0). The comparison below handles this via
+    # the epsilon tolerance: node is visible if its depth is within
+    # epsilon of the MCX-reported front surface depth.
+    visible_idx = camera.get_visible_surface_nodes_from_mcx_depth(
+        node_coords,
+        node_normals,
+        depth_map,
+        angle_deg,
+        depth_tolerance_mm=epsilon,
+    )
+
+    # Convert to boolean mask over all nodes
+    visible_mask = np.zeros(len(node_coords), dtype=bool)
+    visible_mask[visible_idx] = True
+
+    return finite_px, visible_mask, depth_map
+
