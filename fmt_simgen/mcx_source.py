@@ -151,8 +151,11 @@ def _focus_bbox_voxels(
     bbox_max_mm = center + cutoff_mm
 
     # Convert to voxel coordinates (floor for min, ceil for max)
-    voxel_min = (bbox_min_mm - trunk_offset_mm) / voxel_size_mm
-    voxel_max = (bbox_max_mm - trunk_offset_mm) / voxel_size_mm
+    # NOTE: center is already in trunk-local (MCX volume world) coordinates,
+    # so we do NOT subtract trunk_offset_mm here (that offset was already
+    # applied when converting atlas->trunk_local during tumor generation).
+    voxel_min = bbox_min_mm / voxel_size_mm
+    voxel_max = bbox_max_mm / voxel_size_mm
 
     return voxel_min, voxel_max
 
@@ -188,11 +191,12 @@ def _evaluate_pattern_voxels(
     x1, y1, z1 = bbox_max
     nx, ny, nz = x1 - x0, y1 - y0, z1 - z0
 
-    # Generate voxel center coordinates in physical mm
-    # voxel index i -> physical coord = (x0 + i) * voxel_size_mm + trunk_offset
-    gx = np.arange(nx) * voxel_size_mm + (x0 * voxel_size_mm + trunk_offset_mm[0]) + voxel_size_mm / 2
-    gy = np.arange(ny) * voxel_size_mm + (y0 * voxel_size_mm + trunk_offset_mm[1]) + voxel_size_mm / 2
-    gz = np.arange(nz) * voxel_size_mm + (z0 * voxel_size_mm + trunk_offset_mm[2]) + voxel_size_mm / 2
+    # Generate voxel center coordinates in physical mm (trunk-local/world coordinates)
+    # NOTE: trunk_offset_mm is NOT applied here because center is already in
+    # trunk-local coordinates and bbox is computed without the offset.
+    gx = np.arange(nx) * voxel_size_mm + x0 * voxel_size_mm + voxel_size_mm / 2
+    gy = np.arange(ny) * voxel_size_mm + y0 * voxel_size_mm + voxel_size_mm / 2
+    gz = np.arange(nz) * voxel_size_mm + z0 * voxel_size_mm + voxel_size_mm / 2
 
     gx3d, gy3d, gz3d = np.meshgrid(gx, gy, gz, indexing="ij")
     coords = np.column_stack([gx3d.ravel(), gy3d.ravel(), gz3d.ravel()])

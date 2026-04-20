@@ -334,7 +334,9 @@ class DatasetBuilder:
         import shutil
         mesh_dir = Path(self.mesh_config.get("output_path", "output/shared"))
         mesh_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(manifest_path, mesh_dir / "frame_manifest.json")
+        dest = mesh_dir / "frame_manifest.json"
+        if manifest_path.resolve() != dest.resolve():
+            shutil.copy(manifest_path, dest)
 
     def build_samples(self, num_samples: Optional[int] = None, start_index: int = 0) -> None:
         """Generate tumor samples with measurements.

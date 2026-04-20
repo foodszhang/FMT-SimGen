@@ -317,6 +317,165 @@ def get_direct_views_for_source(
     return direct_views
 
 
+def is_direct_path_vertex(
+    source_pos_mm: np.ndarray,
+    vertex_pos_mm: np.ndarray,
+    volume_labels: np.ndarray,
+    voxel_size_mm: float,
+    step_mm: float = DEFAULT_STEP_MM,
+) -> bool:
+    """Check if line from source to vertex traverses only soft tissue.
+
+    Parameters
+    ----------
+    source_pos_mm : np.ndarray
+        Source position in mm.
+    vertex_pos_mm : np.ndarray
+        Vertex position in mm.
+    volume_labels : np.ndarray
+        Volume labels (XYZ order).
+    voxel_size_mm : float
+        Voxel size in mm.
+    step_mm : float
+        Ray-marching step size.
+
+    Returns
+    -------
+    bool
+        True if path traverses only air and soft tissue.
+    """
+    center = np.array(volume_labels.shape) / 2
+
+    def mm_to_voxel(mm: np.ndarray) -> np.ndarray:
+        return np.floor(mm / voxel_size_mm + center).astype(int)
+
+    direction = vertex_pos_mm - source_pos_mm
+    distance = np.linalg.norm(direction)
+    if distance < 0.01:
+        return True
+
+    direction = direction / distance
+    n_steps = int(distance / step_mm)
+
+    for i in range(1, n_steps + 1):
+        pos_mm = source_pos_mm + i * step_mm * direction
+        voxel = mm_to_voxel(pos_mm)
+
+        if not (
+            0 <= voxel[0] < volume_labels.shape[0]
+            and 0 <= voxel[1] < volume_labels.shape[1]
+            and 0 <= voxel[2] < volume_labels.shape[2]
+        ):
+            break
+
+        label = volume_labels[voxel[0], voxel[1], voxel[2]]
+        if label not in {AIR_LABEL} | SOFT_TISSUE_LABELS:
+            return False
+
+    return True
+
+
+def project_vertices_to_camera(
+    vertices: np.ndarray,
+    angle_deg: float,
+    camera_distance_mm: float,
+    fov_mm: float,
+    detector_resolution: Tuple[int, int],
+    voxel_size_mm: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Project vertices to camera image plane.
+
+    Returns
+    -------
+    u, v : np.ndarray
+        Pixel coordinates.
+    depths : np.ndarray
+        Depth from camera.
+    valid : np.ndarray
+        Boolean mask for vertices in frustum.
+    """
+    R = rotation_matrix_y(angle_deg)
+    rotated = vertices @ R.T
+
+    cam_x = rotated[:, 0]
+    cam_y = rotated[:, 1]
+    depths = camera_distance_mm - rotated[:, 2]
+
+    width, height = detector_resolution
+    half_w, half_h = fov_mm / 2, fov_mm / 2
+    px_size = fov_mm / width
+
+    u = ((cam_x + half_w) / px_size).astype(int)
+    v = ((cam_y + half_h) / px_size).astype(int)
+
+    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height) & (depths > 0)
+
+    return u, v, depths, valid
+
+
+def get_direct_views_for_source_v2(
+    source_pos_mm: np.ndarray,
+    view_angles_deg: List[float],
+    vertices: np.ndarray,
+    volume_labels: np.ndarray,
+    voxel_size_mm: float,
+    camera_params: dict,
+    min_direct_vertices: int = 500,
+) -> List[Tuple[float, int]]:
+    """Filter view angles by number of visible direct-path vertices.
+
+    This replaces the center-ray check with a vertex-count threshold.
+    A view is valid if the camera frustum contains ≥ min_direct_vertices
+    that are (a) geometrically direct-path AND (b) visible from camera.
+
+    Parameters
+    ----------
+    source_pos_mm : np.ndarray
+        Source position in mm.
+    view_angles_deg : list of float
+        Candidate view angles.
+    vertices : np.ndarray
+        Surface mesh vertices (N, 3) in mm.
+    volume_labels : np.ndarray
+        Volume labels (XYZ order).
+    voxel_size_mm : float
+        Voxel size in mm.
+    camera_params : dict
+        Camera parameters: {distance, fov, resolution}.
+    min_direct_vertices : int
+        Minimum number of direct-path vertices required.
+
+    Returns
+    -------
+    list of (angle, n_direct_vertices) tuples
+        Sorted by n_direct_vertices descending.
+    """
+    is_direct_geo = np.array(
+        [
+            is_direct_path_vertex(source_pos_mm, v, volume_labels, voxel_size_mm)
+            for v in vertices
+        ]
+    )
+
+    results = []
+    for angle in view_angles_deg:
+        _, _, _, valid_proj = project_vertices_to_camera(
+            vertices,
+            angle,
+            camera_params.get("distance", 200.0),
+            camera_params.get("fov", 50.0),
+            camera_params.get("resolution", (256, 256)),
+            voxel_size_mm,
+        )
+
+        n_direct_in_view = int(np.sum(is_direct_geo & valid_proj))
+        if n_direct_in_view >= min_direct_vertices:
+            results.append((angle, n_direct_in_view))
+
+    results.sort(key=lambda x: -x[1])
+    return results
+
+
 if __name__ == "__main__":
     import sys
     from pathlib import Path
