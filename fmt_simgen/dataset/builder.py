@@ -522,6 +522,10 @@ class DatasetBuilder:
             spacing=voxel_spacing,
             offset=node_min,  # ← trunk-local frame
         )
+        gt_lo = voxel_grid_config.offset.astype(np.float64)
+        gt_hi = gt_lo + voxel_grid_config.spacing * np.asarray(
+            voxel_grid_config.shape, dtype=np.float64
+        )
 
         # 5) mesh_bbox 也用 rebased nodes（tumor placement 不受影响，因为 tumor_generator 内部另有 atlas-frame 逻辑，见 1.2）
         mesh_min = nodes_trunk.min(axis=0)
@@ -604,6 +608,42 @@ class DatasetBuilder:
         min_gt_frac = self.quality_config.get("min_gt_nonzero_frac", 0.001)
         min_gt_nonzero_count = self.quality_config.get("min_gt_nonzero_count", 0)
         max_retries = self.quality_config.get("max_retries", 5)
+        reject_trace_keys = [
+            "reject_air",
+            "reject_bone",
+            "reject_soft_tissue_frac",
+            "reject_depth",
+            "reject_duplicate_exact",
+            "reject_too_close",
+            "layer2_mcx_bbox",
+            "max_attempts_hit",
+        ]
+        reject_reason_alias = {
+            "reject_air": "air",
+            "reject_bone": "bone",
+            "reject_soft_tissue_frac": "soft_tissue_frac",
+            "reject_depth": "depth",
+            "reject_duplicate_exact": "duplicate_exact",
+            "reject_too_close": "too_close",
+            "layer2_mcx_bbox": "bbox",
+            "max_attempts_hit": "max_attempts_hit",
+        }
+
+        def _snapshot_reject_stats() -> Dict[str, int]:
+            stats = getattr(self.tumor_generator, "_reject_stats", {})
+            return {k: int(stats.get(k, 0)) for k in reject_trace_keys}
+
+        def _reject_delta(
+            before: Dict[str, int], after: Dict[str, int]
+        ) -> Dict[str, int]:
+            return {k: max(0, after[k] - before[k]) for k in reject_trace_keys}
+
+        def _dominant_reject(delta: Dict[str, int]) -> tuple[Optional[str], int]:
+            key = max(delta, key=delta.get)
+            value = int(delta[key])
+            if value <= 0:
+                return None, 0
+            return key, value
 
         # Only accumulate metadata for manifest, not full SampleOutput objects
         samples_metadata: List[Dict] = []
@@ -620,7 +660,11 @@ class DatasetBuilder:
 
         foci_dist = self.tumor_config["num_foci_distribution"]
         foci_vals = list(foci_dist.keys())
-        foci_probs = list(foci_dist.values())
+        foci_probs = np.asarray(list(foci_dist.values()), dtype=np.float64)
+        probs_sum = float(foci_probs.sum())
+        if probs_sum <= 0.0:
+            raise ValueError("tumor.num_foci_distribution has non-positive total probability")
+        foci_probs = (foci_probs / probs_sum).tolist()
 
         tier_counts = np.random.choice(tiers, size=num_samples, p=weights)
         samples_plan: List[tuple] = []
@@ -679,17 +723,23 @@ class DatasetBuilder:
             last_b_max = 0.0
             last_gt_nonzero_frac = 0.0
             last_gt_nonzero_count = 0
+            sample_reject_delta = {k: 0 for k in reject_trace_keys}
 
             # Track organ_failure separately: if organ fails even once, params are bad
             organ_failed_all_attempts = True
             quality_passed = False
 
             for attempt in range(max_retries + 1):
+                reject_before = _snapshot_reject_stats()
                 tumor_sample = self.tumor_generator.generate_sample(
                     num_foci=n_foci,
                     depth_mm=depth_mm,
                     depth_tier=depth_tier,
                 )
+                reject_after = _snapshot_reject_stats()
+                attempt_reject_delta = _reject_delta(reject_before, reject_after)
+                for key, value in attempt_reject_delta.items():
+                    sample_reject_delta[key] += value
 
                 # Log reject stats every 50 generated samples
                 if (saved_count + 1) % 50 == 0:
@@ -732,10 +782,32 @@ class DatasetBuilder:
                 del gt_nodes, measurement_b, tumor_sample
                 gc.collect()
                 if attempt < max_retries:
+                    dominant_attempt_key, dominant_attempt_count = _dominant_reject(
+                        attempt_reject_delta
+                    )
                     reason = "organ constraint" if not organ_ok else "quality filter"
+                    if (
+                        not organ_ok
+                        and dominant_attempt_key is not None
+                        and dominant_attempt_count > 0
+                    ):
+                        reason = (
+                            f"{reason}:{reject_reason_alias.get(dominant_attempt_key, dominant_attempt_key)}"
+                        )
                     print(f"    [FILTER] Sample rejected ({reason}), retrying {attempt + 1}/{max_retries}")
                 else:
+                    dominant_attempt_key, dominant_attempt_count = _dominant_reject(
+                        attempt_reject_delta
+                    )
                     reason = "organ constraint" if not organ_ok else "quality filter"
+                    if (
+                        not organ_ok
+                        and dominant_attempt_key is not None
+                        and dominant_attempt_count > 0
+                    ):
+                        reason = (
+                            f"{reason}:{reject_reason_alias.get(dominant_attempt_key, dominant_attempt_key)}"
+                        )
                     print(f"    [FILTER] Sample rejected ({reason}), retries exhausted")
 
             # Gate saving: organ failure = always abandon (don't retry same params)
@@ -744,12 +816,42 @@ class DatasetBuilder:
             if filter_enabled and (organ_failed_all_attempts or not quality_passed):
                 rejected_count += 1
                 skipped_count += 1
+                dominant_key, dominant_count = _dominant_reject(sample_reject_delta)
+                if dominant_key is None:
+                    attributed_reason = (
+                        "quality_filter" if not organ_failed_all_attempts else "organ_constraint"
+                    )
+                else:
+                    attributed_reason = reject_reason_alias.get(dominant_key, dominant_key)
+                print(f"    [REJECT TRACE] delta_reject={sample_reject_delta}")
+                if dominant_key is None:
+                    print(
+                        f"    [REJECT TRACE] dominant=none (+0), attributed={attributed_reason}"
+                    )
+                else:
+                    print(
+                        f"    [REJECT TRACE] dominant={dominant_key} (+{dominant_count}), "
+                        f"attributed={attributed_reason}"
+                    )
                 msg = "organ constraint" if organ_failed_all_attempts else "quality filter"
-                print(f"    [WARNING] Sample failed ({msg}), abandoning and retrying with new parameters")
+                print(
+                    f"    [WARNING] Sample failed ({msg}; attributed={attributed_reason}), "
+                    f"abandoning and retrying with new parameters"
+                )
                 continue
 
             tumor_params = last_tumor_sample.to_dict()
             tumor_params["organ_constraint_passed"] = organ_ok
+            # GT voxel-domain overflow is diagnostic only in U7-Fast (not a hard gate).
+            for focus in last_tumor_sample.foci:
+                c = np.asarray(focus.center, dtype=np.float64)
+                r = float(focus.params.get("radius", 1.0))
+                if np.any(c - r < gt_lo) or np.any(c + r > gt_hi):
+                    print(
+                        "    [WARNING] Focus sphere exceeds gt_voxels bbox; "
+                        "gt_voxels may be truncated (sample kept)"
+                    )
+                    break
 
             sample = SampleOutput(
                 measurement_b=last_measurement_b,

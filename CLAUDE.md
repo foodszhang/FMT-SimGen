@@ -65,6 +65,9 @@ uv run python scripts/run_mcx_pipeline.py \
 
 ## Key Coordinate Systems
 
+### Frame Convention (authoritative metadata)
+`frame_manifest.json` in `output/shared/` is the authoritative metadata for frame, bbox, voxel grid offset/spacing. The working world frame is `mcx_trunk_local_mm` (trunk-local millimeter coordinates).
+
 ### Digimouse atlas volume `[X=380, Y=992, Z=208]`
 - X: Left(−19mm)→Right(+19mm), Y: Anterior(−50mm)→Posterior(+50mm), Z: Inferior(−10mm)→Superior(+11mm)
 - Dorsal(back)=+Z, Ventral(belly)=−Z
@@ -95,7 +98,9 @@ data/{experiment}/samples/sample_XXXX/
 
 ## Configuration
 
-All parameters in `config/default.yaml`. MCX-specific keys:
+All parameters in `config/default.yaml`. Experiment configs support `_base_` inheritance + recursive deep merge (see `run_all.py` and `02_generate_dataset.py`). Do not duplicate config blocks manually.
+
+MCX-specific keys:
 - `mcx.trunk_offset_mm`: physical offset `[0, 34, 0]` for MCX volume origin (from `TRUNK_OFFSET_ATLAS_MM`)
 - `mcx.voxel_size_mm`: 0.2mm (2× downsample from 0.1mm atlas)
 - `mcx.volume_shape`: `[104, 200, 190]` (Z, Y, X)
@@ -115,7 +120,7 @@ All parameters in `config/default.yaml`. MCX-specific keys:
 
 ## Pilot Experiments
 
-The `pilot/` directory contains ad-hoc experimental investigations, not part of the main pipeline:
+The `pilot/` directory contains ad-hoc experimental investigations, not part of the main pipeline. Each subdirectory has its own README with context:
 - `pilot/e0_psf_validation/` — PSF vs MCX point-source comparison
 - `pilot/e1b_model_mismatch/` — Model-mismatch analysis
 - `pilot/e1c_green_function_selection/` — Kernel selection experiments
@@ -125,8 +130,21 @@ The `pilot/` directory contains ad-hoc experimental investigations, not part of 
 ## Testing
 
 This project has no formal test suite. Validation is done via:
-- `scripts/03_verify_dataset.py` — per-sample data verification
-- ad-hoc pilot scripts for experimental validation
+- `scripts/03_verify_dataset.py` — per-sample data verification (archived, use validate_dataset.py)
+- `scripts/validate_dataset.py` — full dataset integrity + stats + figures
+- `scripts/verify_dual_channel.py` — single-sample dual-channel verification
+
+```bash
+# Full dataset validation
+uv run python scripts/validate_dataset.py \
+  --data_dir data/<experiment> --shared_dir output/shared
+
+# Single-sample verification
+uv run python scripts/verify_dual_channel.py \
+  --shared_dir output/shared \
+  --samples_dir data/<experiment>/samples \
+  --output_dir output/verification --n_samples 1
+```
 
 ## MCX Executable
 
@@ -146,6 +164,16 @@ uv run python scripts/run_all.py -n 50 --enable_mcx
 - Use `logging` (not print), module-level `logger = logging.getLogger(__name__)`
 - Specific exception types (not bare `except Exception`)
 - Float division: `int(round(x))` not `int(x)` for voxel count conversion
+
+Float division pitfall:
+```python
+# Correct — avoids truncation bug
+depth_min_vox = int(round(1.0 / 0.1))  # = 10
+
+# Wrong — int() truncates
+depth_min_vox = int(1.0 / 0.1)          # = 9
+```
+
 - See `AGENTS.md` for full style guide (imports, docstrings, data structures)
 
 ## Import Verification

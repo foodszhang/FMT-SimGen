@@ -262,8 +262,8 @@ class TumorGenerator:
             Used to reject tumors outside MCX volume.
         gt_offset_mm : array-like, optional
             Offset of gt_voxels grid origin in trunk-local mm.
-            Used with gt_shape to reject tumors whose Gaussian support
-            falls entirely outside the gt_voxels lookup domain.
+            Kept for diagnostics only in U7-Fast (not used as placement
+            hard gate).
         gt_shape : tuple, optional
             Shape of gt_voxels grid (Nx, Ny, Nz).
         gt_spacing_mm : float, optional
@@ -331,7 +331,7 @@ class TumorGenerator:
         self._accepted_radii: list = []
 
         # ── Precompute EDT depth map from merged volume ─────────────
-        # depth_edt[x, y, z] = distance in mm from nearest body surface (label != 0)
+        # depth_edt[x, y, z] = inward depth (mm) for body voxels (label != 0)
         self._edt_depth_mm: Optional[np.ndarray] = None
         if merged_voxel_volume is not None:
             self._compute_edt_depth(merged_voxel_volume, voxel_size_mm)
@@ -342,24 +342,118 @@ class TumorGenerator:
 
     # ── U7-Fast: new sampling and validation methods ──────────────────────────────────
 
-    def _compute_edt_depth(self, vol: np.ndarray, voxel_size_mm: float) -> None:
-        """Precompute EDT depth map: min distance from each voxel to body surface.
+    def _build_safe_zone_pools(self) -> None:
+        """LEGACY - NOT USED IN U7-Fast.
 
-        Body surface = voxels with label != 0. EDT gives distance in voxels;
-        multiply by voxel_size_mm to get mm.
+        Deprecated zone-pool builder retained only for compatibility.
+        """
+        return
+
+    def _build_final_valid_pools(self) -> None:
+        """LEGACY - NOT USED IN U7-Fast.
+
+        Deprecated final-valid pool builder retained only for compatibility.
+        """
+        return
+
+    def _sample_from_atlas_with_flag(self, *args, **kwargs):
+        """LEGACY - NOT USED IN U7-Fast.
+
+        Deprecated atlas-guided sampling entry retained only for compatibility.
+        """
+        return None
+
+    def _sample_cluster_position(self, *args, **kwargs):
+        """LEGACY - NOT USED IN U7-Fast.
+
+        Deprecated cluster sampler retained only for compatibility.
+        """
+        return None
+
+    def is_valid_placement(
+        self,
+        center: np.ndarray,
+        radius: float,
+        record_rejections: bool = True,
+    ) -> Tuple[bool, Optional[str]]:
+        """LEGACY - NOT USED IN U7-Fast.
+
+        Compatibility wrapper that routes to U7-Fast 4-rule validation.
+        """
+        return self.is_valid_fast(center, radius, record_rejections=record_rejections)
+
+    def _get_mcx_bbox_mm(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Return MCX trunk-local bbox for placement checks."""
+        if self.mcx_bbox_mm is None:
+            return None
+
+        lo, hi = self.mcx_bbox_mm
+        mcx_lo = np.asarray(lo, dtype=np.float64)
+        mcx_hi = np.asarray(hi, dtype=np.float64)
+
+        if np.any(mcx_lo >= mcx_hi):
+            logger.warning(
+                "Invalid MCX bbox: lo=%s, hi=%s",
+                mcx_lo.tolist(),
+                mcx_hi.tolist(),
+            )
+            return None
+        return mcx_lo, mcx_hi
+
+    def _compute_edt_depth(self, vol: np.ndarray, voxel_size_mm: float) -> None:
+        """Precompute inward depth map in millimeters from merged tissue mask.
+
+        Input mask:
+            body_mask = (vol != 0), where non-zero labels are inside the trunk
+            and zero is background/air.
+
+        Output semantics:
+            depth_map[x, y, z] is the distance (mm) from a body voxel to the
+            nearest background voxel. This is inward depth from surface.
+
+        Background voxels:
+            depth is exactly 0 mm by definition.
         """
         from scipy.ndimage import distance_transform_edt
+
         body_mask = vol != 0
-        # EDT: distance from each voxel to nearest background (label==0)
-        # We want distance FROM body TO surface = distance to nearest non-body voxel
-        # But we want depth = distance from surface inward = for interior voxels,
-        # distance to the nearest surface voxel (label != 0 but near boundary)
-        # Simplified: use distance to nearest ZERO voxel as proxy for depth
-        # (0 = outside body, non-zero = inside body)
-        dist = distance_transform_edt(vol == 0, sampling=[voxel_size_mm] * 3)
-        self._edt_depth_mm = dist
-        logger.info(f"  EDT depth map computed: shape={dist.shape}, "
-                    f"max_depth={dist.max():.1f}mm")
+        depth_mm = distance_transform_edt(body_mask, sampling=[voxel_size_mm] * 3)
+        self._edt_depth_mm = depth_mm
+
+        logger.info(
+            "  EDT depth map computed: shape=%s, min=%.3fmm, max=%.3fmm",
+            depth_mm.shape,
+            float(depth_mm.min()),
+            float(depth_mm.max()),
+        )
+
+        body_depth = depth_mm[body_mask]
+        if body_depth.size == 0:
+            logger.warning("  EDT depth diagnostics skipped: no body voxels in merged volume")
+            return
+
+        p1, p5, p50, p95, p99 = np.percentile(body_depth, [1, 5, 50, 95, 99])
+        logger.info(
+            "  EDT body depth percentiles mm: p1=%.3f p5=%.3f p50=%.3f p95=%.3f p99=%.3f",
+            float(p1),
+            float(p5),
+            float(p50),
+            float(p95),
+            float(p99),
+        )
+
+        trunk_interior_vox = np.argwhere(body_mask & (depth_mm > 0.0))
+        if trunk_interior_vox.shape[0] == 0:
+            logger.warning("  EDT depth probes skipped: no interior body voxels with depth>0")
+            return
+
+        n_probe = min(10, trunk_interior_vox.shape[0])
+        probe_ids = self._rng.choice(trunk_interior_vox.shape[0], size=n_probe, replace=False)
+        probe_logs = []
+        for probe_idx in probe_ids:
+            x_v, y_v, z_v = trunk_interior_vox[probe_idx]
+            probe_logs.append(f"({x_v},{y_v},{z_v})->{depth_mm[x_v, y_v, z_v]:.3f}mm")
+        logger.info("  EDT interior depth probes: %s", "; ".join(probe_logs))
 
     def _sample_random_position(
         self, radius: float, region: str = "dorsal"
@@ -392,6 +486,34 @@ class TumorGenerator:
                 x_lo, x_hi = x_dim - 35, x_dim - 5
             y_lo, y_hi = 20, y_dim - 20
             z_lo, z_hi = 20, 70
+
+        # Clamp to volume bounds first
+        x_lo, x_hi = max(0, x_lo), min(x_dim, x_hi)
+        y_lo, y_hi = max(0, y_lo), min(y_dim, y_hi)
+        z_lo, z_hi = max(0, z_lo), min(z_dim, z_hi)
+
+        # Enforce radius-aware MCX bbox at sampling time:
+        # candidate - radius >= mcx_lo and candidate + radius <= mcx_hi.
+        mcx_bbox = self._get_mcx_bbox_mm()
+        if mcx_bbox is not None:
+            mcx_lo, mcx_hi = mcx_bbox
+            center_lo_mm = mcx_lo + radius
+            center_hi_mm = mcx_hi - radius
+            if np.any(center_lo_mm > center_hi_mm):
+                return None
+
+            center_lo_vox = np.ceil(center_lo_mm / vs).astype(np.int64)
+            center_hi_vox = np.floor(center_hi_mm / vs).astype(np.int64)
+
+            x_lo = max(x_lo, int(center_lo_vox[0]))
+            x_hi = min(x_hi, int(center_hi_vox[0]) + 1)
+            y_lo = max(y_lo, int(center_lo_vox[1]))
+            y_hi = min(y_hi, int(center_hi_vox[1]) + 1)
+            z_lo = max(z_lo, int(center_lo_vox[2]))
+            z_hi = min(z_hi, int(center_hi_vox[2]) + 1)
+
+        if x_lo >= x_hi or y_lo >= y_hi or z_lo >= z_hi:
+            return None
 
         x_v = self._rng.integers(x_lo, x_hi)
         y_v = self._rng.integers(y_lo, y_hi)
@@ -526,6 +648,18 @@ class TumorGenerator:
     def _register_accepted(self, center: np.ndarray, radius: float) -> None:
         """Register accepted tumor in diversity registry."""
         self._accepted_centers.append(np.asarray(center, dtype=np.float64))
+        self._accepted_radii.append(float(radius))
+
+    def _sample_num_foci(self) -> int:
+        """Sample number of foci from configured distribution."""
+        keys = list(self.num_foci_dist.keys())
+        probs = np.asarray(list(self.num_foci_dist.values()), dtype=np.float64)
+        probs_sum = float(probs.sum())
+        if probs_sum <= 0.0:
+            raise ValueError("num_foci_distribution must have positive probability sum")
+        probs = probs / probs_sum
+        return int(self._rng.choice(keys, p=probs))
+
     def generate_sample(
         self,
         num_foci: Optional[int] = None,
@@ -537,8 +671,8 @@ class TumorGenerator:
         Pipeline:
         1. Sample random candidate center (80% dorsal / 20% lateral bias)
         2. Validate with is_valid_fast (4 rules: no air, no bone, soft≥50%, depth 2-6mm)
-        3. Check diversity (no exact duplicate, min distance to existing)
-        4. Repeat up to 200 attempts per focus
+        3. Check minimal dedup (exact duplicate key only)
+        4. Accept sample
 
         Parameters
         ----------
@@ -556,6 +690,12 @@ class TumorGenerator:
         """
         if num_foci is None:
             num_foci = self._sample_num_foci()
+        if num_foci != 1:
+            logger.warning(
+                "U7-Fast main path is single-focus; forcing num_foci=1 (requested=%s)",
+                num_foci,
+            )
+            num_foci = 1
         shape = self._rng.choice(self.shapes)
         radius = self._rng.uniform(*self.radius_range)
 
@@ -572,17 +712,9 @@ class TumorGenerator:
                 attempts += 1
 
                 # ── Step 1: random candidate ─────────────────────────────
-                if is_anchor:
-                    # 80% dorsal, 20% lateral sampling bias
-                    region = "dorsal" if self._rng.random() < 0.8 else "lateral"
-                    candidate_center = self._sample_random_position(radius, region=region)
-                else:
-                    # Cluster: random offset around anchor (up to 6mm)
-                    anchor = foci[0].center
-                    angle = self._rng.uniform(0, 2 * np.pi)
-                    dist = self._rng.uniform(1.0, 6.0)
-                    offset = np.array([dist * np.cos(angle), dist * np.sin(angle), 0.0])
-                    candidate_center = (np.asarray(anchor, dtype=np.float64) + offset)
+                # 80% dorsal, 20% lateral sampling bias
+                region = "dorsal" if self._rng.random() < 0.8 else "lateral"
+                candidate_center = self._sample_random_position(radius, region=region)
 
                 if candidate_center is None:
                     continue
@@ -598,12 +730,6 @@ class TumorGenerator:
                        round(candidate_center[2], 1), round(radius, 1))
                 if key in self._exact_keys_set():
                     self._reject_stats["reject_duplicate_exact"] += 1
-                    continue
-
-                # Check min distance to existing
-                too_close, min_dist = self._too_close_to_any(candidate_center, radius)
-                if too_close:
-                    self._reject_stats["reject_too_close"] += 1
                     continue
 
                 # All checks passed
@@ -630,18 +756,13 @@ class TumorGenerator:
         sample._organ_constraint_passed = organ_constraint_passed
 
         # ── MCX bbox check ───────────────────────────────────────────
-        if not self._organ_constraint_disabled and self.mcx_bbox_mm is not None:
-            lo, hi = self.mcx_bbox_mm
-            if self.gt_offset_mm is not None and self.gt_shape is not None:
-                gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
-                strict_lo = np.maximum(lo, self.gt_offset_mm)
-                strict_hi = np.minimum(hi, gt_hi)
-            else:
-                strict_lo, strict_hi = lo, hi
+        mcx_bbox = self._get_mcx_bbox_mm()
+        if not self._organ_constraint_disabled and mcx_bbox is not None:
+            mcx_lo, mcx_hi = mcx_bbox
             for focus in sample.foci:
                 c = np.asarray(focus.center)
                 r = focus.params.get("radius", 1.0)
-                if np.any(c - r < strict_lo) or np.any(c + r > strict_hi):
+                if np.any(c - r < mcx_lo) or np.any(c + r > mcx_hi):
                     self._reject_stats["layer2_mcx_bbox"] += 1
                     sample._organ_constraint_passed = False
                     break
@@ -668,4 +789,3 @@ class TumorGenerator:
         key = (round(center[0], 1), round(center[1], 1),
                round(center[2], 1), round(radius, 1))
         self._exact_keys_set().add(key)
-
