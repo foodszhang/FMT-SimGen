@@ -208,7 +208,7 @@ def main():
     # ── Generate mesh ──────────────────────────────────────────────────────────
     # downsample=4 at 0.2mm → effective voxel = 0.8mm (same as old pipeline's 8× at 0.1mm)
     mesh_config = {
-        "target_nodes": 5000,
+        "target_nodes": 25000,
         "surface_maxvol": 0.5,
         "deep_maxvol": 5.0,
         "roi_maxvol": 1.0,

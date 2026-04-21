@@ -348,7 +348,7 @@ def gate4_visibility_union():
         json.dump({"epsilon_mm": union_epsilon, "union_count": int(union_visible.sum()),
                    "per_angle": results}, f, indent=2)
 
-    target_lo, target_hi = 2500, 3500
+    target_lo, target_hi = 7500, 11000
     if target_lo <= union_visible.sum() <= target_hi:
         logger.info(f"✅ Visibility UNION PASSED: {union_visible.sum()} ∈ [{target_lo}, {target_hi}]")
         return True

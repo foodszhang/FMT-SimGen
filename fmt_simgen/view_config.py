@@ -138,9 +138,8 @@ class TurntableCamera:
         A node is visible if:
         1. It is a surface node (non-zero normal)
         2. Its normal faces the camera (dot(normal, view_dir) > 0)
-        3. It is not platform-occluded
-        4. Its camera-frame depth <= depth_map[pv, pu] + ε
-           (i.e., it is at or shallower than the frontmost fluence voxel)
+        3. Its camera-frame depth <= depth_map[pv, pu] + ε
+           (one-sided: reject if node_depth > mcx_depth + epsilon)
 
         Parameters
         ----------
@@ -155,8 +154,9 @@ class TurntableCamera:
         angle_deg : float
             Rotation angle in degrees.
         depth_tolerance_mm : float
-            Tolerance for depth comparison (default 0.2mm = voxel_size).
-            A node is visible if its depth is within this of depth_map.
+            One-sided tolerance: reject node if node_depth > mcx_depth + epsilon.
+            Default 0.2mm ≈ voxel_size. Nodes at or shallower than the MCX
+            frontmost-surface pass; deeper nodes are occluded.
 
         Returns
         -------
@@ -395,7 +395,8 @@ def get_visible_surface_nodes_from_mcx_depth(
     volume_center_world : tuple[float, float, float]
         Physical center of the MCX volume in trunk-local mm, e.g. (19.0, 20.0, 10.4).
     epsilon : float
-        Bilateral depth tolerance in mm (default 0.5).
+        One-sided depth tolerance in mm (default 0.5).
+        A node is visible if node_depth <= mcx_depth + epsilon.
     exterior_faces : np.ndarray [E×3] or None
         If provided, use only these exterior-hull faces (adjacent to exactly 1 tet)
         for surface-normal computation. This excludes interior label-boundary faces
@@ -418,11 +419,10 @@ def get_visible_surface_nodes_from_mcx_depth(
 
     # 1. Compute depth map from tissue mask.
     #
-    # project_volume_reference internally centers the volume via (idx - N/2 + 0.5)*vs
-    # (equivalent to subtracting VCW=(cx,cy,cz) for our grid size), so passing
-    # vcw=(0,0,0) produces depth = D - (z_trunk - cz) in the same camera frame
-    # as project_nodes_to_detector(vcw=VCW). Both sources are grid-centered and
-    # thus directly comparable without any systemic offset.
+    # project_volume_reference uses (idx + 0.5)*vs - vcw for physical placement,
+    # which is consistent with TurntableCamera.project_nodes_to_detector(vcw=vcw).
+    # Both sources are in the same grid-centered camera frame, so the
+    # one-sided depth comparison (node_d <= mcx_d + epsilon) is directly valid.
     _, depth_map = project_volume_reference(
         mask_xyz.astype(np.uint8),
         angle_deg=angle_deg,
@@ -451,7 +451,7 @@ def get_visible_surface_nodes_from_mcx_depth(
 
     # 3. Get visible surface nodes using MCX depth for self-occlusion.
     # Both depth_map (step 1) and node_depth (project_nodes_to_detector) are in the
-    # same grid-centered camera frame, so direct comparison with epsilon tolerance works.
+    # same grid-centered camera frame. One-sided test: reject if node_d > mcx_d + epsilon.
     visible_idx = camera.get_visible_surface_nodes_from_mcx_depth(
         node_coords,
         node_normals,
