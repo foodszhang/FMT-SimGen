@@ -36,7 +36,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_OFFSET_ATLAS_MM
 from fmt_simgen.mcx_projection import project_sample, load_jnii_volume
 from fmt_simgen.mcx_runner import detect_mcx_executable, run_mcx_single
 from fmt_simgen.mcx_config import generate_mcx_config
@@ -237,7 +237,7 @@ def main() -> None:
     # which means the centering is relative to the ATLAS center (not the
     # trunk center). The trunk_offset IS the centering shift.
     mcx_cfg = shared_cfg.get("mcx", {})
-    trunk_offset_y = mcx_cfg.get("trunk_offset_mm", [0, 30, 0])[1]
+    trunk_offset_y = mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist())[1]
     volume_center_world = tuple(VOLUME_CENTER_WORLD)
 
     logger.info(

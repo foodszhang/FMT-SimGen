@@ -186,7 +186,7 @@ class DatasetBuilder:
 
         # ── Rebase to trunk-local and save mesh.npz in trunk-local frame ─────
         mcx_cfg = self.config.get("mcx", {})
-        trunk_offset_atlas = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]),
+        trunk_offset_atlas = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()),
                                       dtype=np.float64)
         self._mesh_data.nodes = (
             self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
@@ -214,7 +214,7 @@ class DatasetBuilder:
         """
         mesh_path = Path(mesh_path)
         mcx_cfg = self.config.get("mcx", {})
-        trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]),
+        trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()),
                                dtype=np.float64)
 
         data = np.load(mesh_path, allow_pickle=True)
@@ -297,8 +297,8 @@ class DatasetBuilder:
             return
 
         mcx_raw = np.fromfile(mcx_bin, dtype=np.uint8)
-        mcx_zyx = mcx_raw.reshape((104, 200, 190))
-        mcx_xyz = mcx_zyx.transpose(2, 1, 0)  # → (190, 200, 104) XYZ
+        mcx_zyx = mcx_raw.reshape(TRUNK_GRID_SHAPE[::-1])  # ZYX = (104, 200, 190)
+        mcx_xyz = mcx_zyx.transpose(2, 1, 0)  # → TRUNK_GRID_SHAPE XYZ
 
         # mcx body voxel indices → trunk-local mm
         mcx_body_idx = np.argwhere(mcx_xyz > 0)  # (M, 3) XYZ voxel indices

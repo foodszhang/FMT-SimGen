@@ -72,7 +72,7 @@ uv run python scripts/run_mcx_pipeline.py \
 ### MCX trunk volume (after Step 0f crop + downsample)
 - Shape: `[Z=104, Y=200, X=190]`, voxel_size=0.2mm
 - JNII→XYZ: `nifti.transpose(2, 1, 0)` → `[X=190, Y=200, Z=104]`
-- Physical origin (voxel [0,0,0] world position): `trunk_offset_mm = [0, 30, 0]`
+- Physical origin (voxel [0,0,0] world position): `trunk_offset_mm = [0, 34, 0]` (sourced from `fmt_simgen.frame_contract::TRUNK_OFFSET_ATLAS_MM`)
 
 ### MCX projection camera (TurntableCamera)
 - Camera at `[0, 0, D]`, looking toward origin along −Z, rotation around Y axis
@@ -96,7 +96,7 @@ data/{experiment}/samples/sample_XXXX/
 ## Configuration
 
 All parameters in `config/default.yaml`. MCX-specific keys:
-- `mcx.trunk_offset_mm`: physical offset `[0, 30, 0]` for MCX volume origin
+- `mcx.trunk_offset_mm`: physical offset `[0, 34, 0]` for MCX volume origin (from `TRUNK_OFFSET_ATLAS_MM`)
 - `mcx.voxel_size_mm`: 0.2mm (2× downsample from 0.1mm atlas)
 - `mcx.volume_shape`: `[104, 200, 190]` (Z, Y, X)
 - `view_config.angles`: `[-90, -60, -30, 0, 30, 60, 90]`

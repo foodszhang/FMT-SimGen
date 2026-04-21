@@ -193,8 +193,8 @@ mcx:
   voxel_size_mm: 0.2
 
   # 裁剪后体积起点在原始 atlas 中的物理偏移（mm）
-  # Y offset = y_start * original_voxel_size = 300 * 0.1 = 30mm
-  trunk_offset_mm: [0, 30, 0]
+  # Y offset: atlas body center Y = 34mm (measured from atlas crop, not y_start*0.1)
+  trunk_offset_mm: [0, 34, 0]  # CORRECTED: was 30, actual atlas body center Y offset = 34mm
 
   # MCX Dim（Z, Y, X 顺序）- 由脚本自动计算
   # 原始裁剪后 (X=380, Y=400, Z=208) → 2× 下采样后 (X=190, Y=200, Z=104)

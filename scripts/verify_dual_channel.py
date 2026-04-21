@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fmt_simgen.mcx_projection import load_jnii_volume
 from fmt_simgen.view_config import TurntableCamera
-from fmt_simgen.frame_contract import VOXEL_SIZE_MM, TRUNK_GRID_SHAPE
+from fmt_simgen.frame_contract import VOXEL_SIZE_MM, TRUNK_GRID_SHAPE, TRUNK_OFFSET_ATLAS_MM
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ def check_spatial_alignment(
     with open(repo_root / "config" / "default.yaml") as f:
         cfg = yaml.safe_load(f)
     mcx_cfg = cfg.get("mcx", {})
-    trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
+    trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()))
 
     mesh = np.load(shared_dir / "mesh.npz")
     nodes = mesh["nodes"]
@@ -374,7 +374,7 @@ def check_surface_overlap(
     with open(repo_root / "config" / "default.yaml") as f:
         cfg = yaml.safe_load(f)
     mcx_cfg = cfg.get("mcx", {})
-    trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", [0, 30, 0]))
+    trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()))
     voxel_size = VOXEL_SIZE_MM
     nx, ny, nz = mcx_cfg.get("volume_shape", list(TRUNK_GRID_SHAPE))
     volume_center_world = trunk_offset + np.array([nx, ny, nz]) * voxel_size / 2

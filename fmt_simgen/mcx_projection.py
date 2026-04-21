@@ -5,12 +5,12 @@ Projects MCX 3D fluence volumes (.jnii) to multi-angle 2D detector
 projections (proj.npz) using the reference's proven projection algorithm.
 
 Coordinate system:
-- MCX volume is stored in ZYX order (shape: Z×Y×X = 104×200×190)
-- JNII → XYZ: transpose(2, 1, 0) → shape (X=190, Y=200, Z=104)
+- MCX volume is stored in ZYX order (shape: Z×Y×X = TRUNK_GRID_SHAPE[::-1])
+- JNII → XYZ: transpose(2, 1, 0) → shape (TRUNK_GRID_SHAPE)
 - Projection places volume center at world origin by default.
   The volume_center_world parameter shifts this to the correct atlas position.
-  For MCX trunk volume (after 2× downsample): volume_center_world=(19.0, 20.0, 10.4)
-  meaning the volume center voxel [95, 100, 52] corresponds to world (X=19mm, Y=20mm, Z=10.4mm).
+  For MCX trunk volume (after 2× downsample): volume_center_world=VOLUME_CENTER_WORLD
+  (derived from TRUNK_SIZE_MM / 2 = (19.0, 20.0, 10.4) mm).
 - Camera at [0, 0, D] looking toward origin along -Z, with rotation around Y axis.
 """
 
@@ -74,7 +74,7 @@ def project_volume_reference(
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
         After centering, the volume corner is placed at this world position.
 
     Returns
@@ -226,7 +226,7 @@ def project_volume_reference_numpy(
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
 
     Returns
     -------
@@ -320,7 +320,7 @@ def load_jnii_volume(jnii_path: Path) -> np.ndarray:
     -------
     np.ndarray
         Fluence volume in XYZ order [X×Y×Z], float32.
-        Shape: (190, 200, 104) for standard FMT-SimGen MCX volume.
+        Shape: TRUNK_GRID_SHAPE for standard FMT-SimGen MCX volume.
     """
     data = jd.loadjd(str(jnii_path))
     nifti = data["NIFTIData"] if isinstance(data, dict) else data
@@ -350,7 +350,7 @@ def project_mcx_fluence(
         Camera model with configured angles and detector parameters.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
 
     Returns
     -------
@@ -399,7 +399,7 @@ def project_sample(
         If True (default), skip samples with existing proj.npz.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD = (19.0, 20.0, 10.4).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
 
     Returns
     -------

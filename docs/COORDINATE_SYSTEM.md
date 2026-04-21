@@ -7,7 +7,7 @@
 - **轴向**：+X = 右, +Y = 后（tail 方向）, +Z = 背 (dorsal)
 - **范围**：X∈[0, 38], Y∈[0, 40], Z∈[0, 20.8]
 - **与 Digimouse atlas 的关系**：
-  `world_mm = atlas_voxel * 0.1 − [0, 30, 0]`
+  `world_mm = atlas_voxel * 0.1 − [0, 34, 0]` (from `TRUNK_OFFSET_ATLAS_MM`)
 
 所有以下数据**必须**在这个 frame 下：
 mesh.nodes / gt_nodes 的隐式坐标 / gt_voxels offset / tumor_params.foci[i].center / MCX source position (只是换算成 voxel)。
@@ -22,9 +22,10 @@ mesh.nodes / gt_nodes 的隐式坐标 / gt_voxels offset / tumor_params.foci[i].
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "world_frame": "mcx_trunk_local_mm",
-  "atlas_to_world_offset_mm": [0, 30, 0],
+  "config_hash": "a77e7f8e41ade52c",   // from fmt_simgen.config.CONFIG_HASH
+  "atlas_to_world_offset_mm": [0, 34, 0],  // from TRUNK_OFFSET_ATLAS_MM
   "mcx_volume": {
     "shape_xyz": [190, 200, 104],
     "voxel_size_mm": 0.2,

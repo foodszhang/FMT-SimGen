@@ -14,6 +14,7 @@ from typing import Dict, Union
 import numpy as np
 import yaml
 
+from fmt_simgen.frame_contract import TRUNK_GRID_SHAPE
 from fmt_simgen.mcx_source import tumor_params_to_mcx_pattern
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def generate_mcx_config(
     config_dict = {
         "Domain": {
             "VolumeFile": str(volume_file),
-            "Dim": list(mcx_config["volume_shape"]),  # [Z, Y, X] = [104, 200, 190]
+            "Dim": list(mcx_config["volume_shape"]),  # [Z, Y, X] = TRUNK_GRID_SHAPE[::-1]
             "OriginType": 1,
             "LengthUnit": float(mcx_config["voxel_size_mm"]),
             "Media": media_list,
