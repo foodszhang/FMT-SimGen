@@ -435,6 +435,9 @@ class DatasetBuilder:
         if num_samples is None:
             num_samples = self.dataset_config.get("num_samples", 50)
 
+        import logging
+        logger = logging.getLogger(__name__)
+
         self._ensure_setup()
 
         voxel_spacing = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)

@@ -40,9 +40,10 @@ class SourceType(Enum):
 class AnalyticFocus:
     """Single tumor focus defined as an analytic function in 3D space."""
 
-    center: np.ndarray
+    center: np.ndarray  # trunk-local mm (always — internal invariant)
     shape: ShapeType
     params: Dict
+    center_atlas_mm: Optional[np.ndarray] = None  # atlas frame, for debug serialization only
 
     def evaluate(self, coords: np.ndarray) -> np.ndarray:
         """Evaluate the analytic function at given coordinates.
@@ -184,8 +185,12 @@ class TumorSample:
             "source_type": self.foci[0].params.get("source_type", "gaussian") if self.foci else "gaussian",
             "foci": [
                 {
-                    "center": list(focus.center),  # trunk-local mm ← 主字段
-                    "center_atlas_mm": list(focus.center_atlas_mm),  # 调试用
+                    "center": list(focus.center),  # trunk-local mm
+                    "center_atlas_mm": (
+                        list(focus.center_atlas_mm)
+                        if focus.center_atlas_mm is not None
+                        else None
+                    ),
                     "shape": focus.shape.value,
                     "params": focus.params,
                     # Stage 2 voxel generation needs:
@@ -401,6 +406,7 @@ class TumorGenerator:
                 if candidate_center is None:
                     continue
 
+                # All positions are now trunk-local (conversion done in _sample_from_atlas_with_flag)
                 if not from_atlas if is_anchor else True:
                     depth = self._get_depth_at_position(candidate_center)
                     if depth < self.depth_range[0] or depth > self.depth_range[1]:
@@ -429,7 +435,7 @@ class TumorGenerator:
                             if not (self.depth_range[0] <= fb_depth_val <= self.depth_range[1]):
                                 continue
                             if self.is_valid_placement(fb_center, radius):
-                                valid_fallback = (fb_center, fb_from_atlas)
+                                valid_fallback = (fb_center, False)  # False: already trunk-local
                                 break
                         if valid_fallback is not None:
                             candidate_center, from_atlas = valid_fallback
@@ -438,8 +444,15 @@ class TumorGenerator:
                             continue
 
                 params = self._get_shape_params(shape, radius)
+                # For atlas-sampled foci, store original atlas coords for debug serialization
+                center_atlas = (
+                    candidate_center + self.trunk_offset_mm
+                    if from_atlas
+                    else None
+                )
                 new_focus = AnalyticFocus(
-                    center=candidate_center, shape=shape, params=params
+                    center=candidate_center, shape=shape, params=params,
+                    center_atlas_mm=center_atlas,
                 )
                 test_foci = foci + [new_focus]
 
@@ -474,11 +487,6 @@ class TumorGenerator:
         sample._depth_tier = depth_tier
         sample._depth_mm = depth_mm
         sample._organ_constraint_passed = organ_constraint_passed
-
-        # [FIX v3] atlas-corner mm → mcx_trunk_local_mm
-        for focus in sample.foci:
-            focus.center_atlas_mm = np.asarray(focus.center, dtype=np.float64).copy()
-            focus.center = (focus.center_atlas_mm - self.trunk_offset_mm).tolist()
 
         # Reject tumors outside MCX volume (only when organ_constraint is enabled)
         if not self._organ_constraint_disabled and self.mcx_bbox_mm is not None:
@@ -634,7 +642,19 @@ class TumorGenerator:
 
             candidate = anchor_center + offset
 
-            if self.mesh_bbox is not None:
+            # Use MCX bbox as primary constraint (trunk-local volume bounds)
+            # Fall back to mesh_bbox if mcx_bbox not available
+            if self.mcx_bbox_mm is not None and not self._organ_constraint_disabled:
+                lo, hi = self.mcx_bbox_mm
+                if self.gt_offset_mm is not None and self.gt_shape is not None:
+                    gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
+                    strict_lo = np.maximum(lo, self.gt_offset_mm)
+                    strict_hi = np.minimum(hi, gt_hi)
+                else:
+                    strict_lo, strict_hi = lo, hi
+                if np.any(candidate < strict_lo) or np.any(candidate > strict_hi):
+                    continue
+            elif self.mesh_bbox is not None:
                 bbox_min = np.array(self.mesh_bbox["min"])
                 bbox_max = np.array(self.mesh_bbox["max"])
                 if np.any(candidate < bbox_min) or np.any(candidate > bbox_max):
@@ -702,13 +722,11 @@ class TumorGenerator:
         Returns
         -------
         Tuple[np.ndarray, bool]
-            (position [3] in mm, actually_from_atlas bool)
+            (position [3] in trunk-local mm, actually_from_atlas bool)
             Returns (config_position, False) if atlas sampling fails.
         """
         region = self._rng.choice(self.regions)
 
-        # Use skin surface coordinates (no depth filtering needed since
-        # skin IS the body surface — no subcutaneous layer in this atlas)
         coords = self.atlas.get_skin_surface_coords(
             regions=[region],
             torso_only=True,
@@ -718,7 +736,9 @@ class TumorGenerator:
             return self._sample_from_config(forced_depth=forced_depth), False
 
         idx = self._rng.integers(len(coords))
-        pos = coords[idx].copy()
+        # Convert atlas mm → trunk-local mm immediately; all downstream code
+        # (is_valid_placement, MCX bbox, etc.) operates in trunk-local frame.
+        pos = coords[idx].copy() - self.trunk_offset_mm
         return pos, True
 
     def _sample_from_config(
