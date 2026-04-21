@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.config import OPTICAL
 from shared.green import G_inf
+from shared.metrics import scale_factor_logmse
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -272,7 +273,7 @@ def main():
 
         valid = is_direct & (measurement > 0)
         forward_gt, _ = compute_forward_and_grad(gt_pos, vertices_mm, OPTICAL)
-        scale = float(np.sum(measurement[valid]) / np.sum(forward_gt[valid]))
+        scale = scale_factor_logmse(measurement[valid], forward_gt[valid])
         logger.info(f"Scale factor: {scale:.2e}")
 
         init_errors = [0.5, 1.0, 2.0]
