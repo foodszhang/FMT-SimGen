@@ -132,6 +132,35 @@ def compute_forward_and_grad(
     return G, np.column_stack([dG_dx, dG_dy, dG_dz])
 
 
+def loss_only(
+    params: np.ndarray,
+    vertices: np.ndarray,
+    measurement: np.ndarray,
+    direct_mask: np.ndarray,
+    optical,
+) -> float:
+    """Compute loss only (for jac=False optimization)."""
+    source_pos = params[:3]
+
+    forward, _ = compute_forward_and_grad(source_pos, vertices, optical)
+
+    valid = direct_mask & (measurement > 1e-10) & (forward > 1e-10)
+    n_valid = np.sum(valid)
+
+    if n_valid < 10:
+        return 1e10
+
+    scale = scale_factor_logmse(measurement[valid], forward[valid])
+
+    log_meas = np.log10(measurement[valid] + 1e-20)
+    log_fwd = np.log10(scale * forward[valid] + 1e-20)
+
+    diff = log_meas - log_fwd
+    loss = float(np.mean(diff**2))
+
+    return loss
+
+
 def loss_and_grad(
     params: np.ndarray,
     vertices: np.ndarray,
@@ -174,16 +203,15 @@ def run_inversion(
     vertices: np.ndarray,
     measurement: np.ndarray,
     direct_mask: np.ndarray,
-    scale: float,
 ) -> dict:
     """Run inversion from init_pos to recover gt_pos."""
 
     result = minimize(
-        loss_and_grad,
+        loss_only,
         init_pos.copy(),
-        args=(vertices, measurement, direct_mask, scale, OPTICAL),
+        args=(vertices, measurement, direct_mask, OPTICAL),
         method="L-BFGS-B",
-        jac=True,
+        jac=False,
         options={"maxiter": 200, "ftol": 1e-10, "gtol": 1e-8},
     )
 
@@ -193,6 +221,7 @@ def run_inversion(
     forward, _ = compute_forward_and_grad(recovered_pos, vertices, OPTICAL)
     valid = direct_mask & (measurement > 1e-10) & (forward > 1e-10)
     if np.sum(valid) > 10:
+        scale = scale_factor_logmse(measurement[valid], forward[valid])
         log_meas = np.log10(measurement[valid] + 1e-20)
         log_fwd = np.log10(scale * forward[valid] + 1e-20)
         final_ncc = np.corrcoef(log_meas, log_fwd)[0, 1]
@@ -271,11 +300,6 @@ def main():
         fluence = np.load(fluence_path)
         measurement = sample_fluence_at_vertices(fluence, vertices_mm, VOXEL_SIZE_MM)
 
-        valid = is_direct & (measurement > 0)
-        forward_gt, _ = compute_forward_and_grad(gt_pos, vertices_mm, OPTICAL)
-        scale = scale_factor_logmse(measurement[valid], forward_gt[valid])
-        logger.info(f"Scale factor: {scale:.2e}")
-
         init_errors = [0.5, 1.0, 2.0]
         pos_results = []
 
@@ -287,7 +311,7 @@ def main():
             )
 
             inv_result = run_inversion(
-                gt_pos, init_pos, vertices_mm, measurement, is_direct, scale
+                gt_pos, init_pos, vertices_mm, measurement, is_direct
             )
             pos_results.append(inv_result)
 
@@ -299,7 +323,6 @@ def main():
         results["inversions"][pos_name] = {
             "gt_position_mm": gt_pos.tolist(),
             "n_direct_vertices": n_direct,
-            "scale_factor": scale,
             "trials": pos_results,
         }
 
