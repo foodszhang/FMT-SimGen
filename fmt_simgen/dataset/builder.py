@@ -504,8 +504,11 @@ class DatasetBuilder:
         if merged_vol_path.exists():
             merged_vol_raw = np.fromfile(merged_vol_path, dtype=np.uint8)
             # volume_shape is ZYX from config, transpose to XYZ for [X,Y,Z] indexing
-            merged_vol_xyz = merged_vol_raw.reshape(vs_zyx[::-1]).transpose(2, 1, 0)
-            print(f"  Loaded merged voxel volume: {merged_vol_xyz.shape}, dtype={merged_vol_xyz.dtype}")
+            merged_vol_xyz = merged_vol_raw.reshape(vs_zyx).transpose(2, 1, 0)
+            print(
+                "  Loaded merged voxel volume (XYZ): "
+                f"{merged_vol_xyz.shape}, dtype={merged_vol_xyz.dtype}"
+            )
         else:
             merged_vol_xyz = None
             print("  [WARNING] mcx_volume_trunk.bin not found — organ constraint will use fallback")

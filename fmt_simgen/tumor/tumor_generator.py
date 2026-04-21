@@ -329,6 +329,7 @@ class TumorGenerator:
         # ── U7-Fast: diversity registry ────────────────────────────
         self._accepted_centers: list = []
         self._accepted_radii: list = []
+        self._candidate_debug_printed = 0
 
         # ── Precompute EDT depth map from merged volume ─────────────
         # depth_edt[x, y, z] = inward depth (mm) for body voxels (label != 0)
@@ -518,6 +519,14 @@ class TumorGenerator:
         x_v = self._rng.integers(x_lo, x_hi)
         y_v = self._rng.integers(y_lo, y_hi)
         z_v = self._rng.integers(z_lo, z_hi)
+        center_label = int(self.merged_voxel_volume[x_v, y_v, z_v])
+        if self._candidate_debug_printed < 12:
+            print(
+                f"    [CAND] #{self._candidate_debug_printed + 1}: "
+                f"voxel=({x_v},{y_v},{z_v}), center_label={center_label}",
+                flush=True,
+            )
+            self._candidate_debug_printed += 1
 
         # Convert to trunk-local mm (direct indexing)
         center = np.array([x_v * vs, y_v * vs, z_v * vs], dtype=np.float64)
@@ -659,6 +668,28 @@ class TumorGenerator:
             raise ValueError("num_foci_distribution must have positive probability sum")
         probs = probs / probs_sum
         return int(self._rng.choice(keys, p=probs))
+
+    def _get_shape_params(self, shape: ShapeType, radius: float) -> Dict:
+        """Build shape parameters for a single focus."""
+        source_type = self.config.get("source_type", "gaussian")
+        if shape == ShapeType.SPHERE:
+            return {"radius": float(radius), "source_type": source_type}
+
+        # Ellipsoid: anisotropy sampled from configured ratio range.
+        ratio_lo, ratio_hi = self.ellipsoid_ratio
+        rx_ratio = float(self._rng.uniform(ratio_lo, ratio_hi))
+        rz_ratio = float(self._rng.uniform(ratio_lo, ratio_hi))
+        return {
+            "radius": float(radius),
+            "rx": float(radius * rx_ratio),
+            "ry": float(radius),
+            "rz": float(radius * rz_ratio),
+            "source_type": source_type,
+        }
+
+    def _check_constraints(self, foci: List[AnalyticFocus]) -> bool:
+        """U7-Fast: no extra constraints beyond fast validation + exact dedup."""
+        return len(foci) > 0
 
     def generate_sample(
         self,
