@@ -688,6 +688,11 @@ class DatasetBuilder:
                     depth_tier=depth_tier,
                 )
 
+                # Log reject stats every 50 generated samples
+                if (saved_count + 1) % 50 == 0:
+                    logger.info(f"reject_stats @ sample {saved_count + 1}: "
+                                f"{self.tumor_generator._reject_stats}")
+
                 # Compute gt_nodes and measurement_b first (small, ~100KB total)
                 gt_nodes = dual_sampler.sample_to_nodes(tumor_sample)
                 measurement_b = self.fem_solver.forward(gt_nodes)

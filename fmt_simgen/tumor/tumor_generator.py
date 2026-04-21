@@ -308,6 +308,15 @@ class TumorGenerator:
 
         self._rng = np.random.default_rng()
 
+        # ── Rejection diagnostic counters ───────────────────────────
+        self._reject_stats = {
+            "layer1_organ": 0,
+            "layer1_depth": 0,
+            "layer2_mcx_bbox": 0,
+            "max_attempts_hit": 0,
+            "accepted": 0,
+        }
+
         # ── Precompute sampling coordinates for all depth tiers ──
         self._precompute_sampling_coords()
 
@@ -395,6 +404,7 @@ class TumorGenerator:
                 if not from_atlas if is_anchor else True:
                     depth = self._get_depth_at_position(candidate_center)
                     if depth < self.depth_range[0] or depth > self.depth_range[1]:
+                        self._reject_stats["layer1_depth"] += 1
                         if is_anchor:
                             candidate_center, from_atlas = (
                                 self._sample_position_with_source(forced_depth=depth_mm)
@@ -406,20 +416,21 @@ class TumorGenerator:
                 # Check organ boundary constraint for anchor focus
                 if is_anchor and self.mesh_nodes is not None:
                     if not self.is_valid_placement(candidate_center, radius):
-                        # Try multiple fallback depths before giving up
-                        fallback_depths = [3.0, 2.5, 2.0, 1.5]
+                        self._reject_stats["layer1_organ"] += 1
+                        # Try 20 independent random positions instead of fixed depths
                         valid_fallback = None
-                        for fb_depth in fallback_depths:
-                            fb_center, fb_from_atlas = (
-                                self._sample_position_with_source(forced_depth=fb_depth)
+                        for _ in range(20):
+                            fb_center, fb_from_atlas = self._sample_position_with_source(
+                                forced_depth=depth_mm
                             )
-                            if fb_center is not None:
-                                fb_depth_val = self._get_depth_at_position(fb_center)
-                                if not (self.depth_range[0] <= fb_depth_val <= self.depth_range[1]):
-                                    continue
-                                if self.is_valid_placement(fb_center, radius):
-                                    valid_fallback = (fb_center, fb_from_atlas)
-                                    break
+                            if fb_center is None:
+                                continue
+                            fb_depth_val = self._get_depth_at_position(fb_center)
+                            if not (self.depth_range[0] <= fb_depth_val <= self.depth_range[1]):
+                                continue
+                            if self.is_valid_placement(fb_center, radius):
+                                valid_fallback = (fb_center, fb_from_atlas)
+                                break
                         if valid_fallback is not None:
                             candidate_center, from_atlas = valid_fallback
                         else:
@@ -454,6 +465,8 @@ class TumorGenerator:
                         foci.append(new_focus)
 
             if center is None:
+                if is_anchor:
+                    self._reject_stats["max_attempts_hit"] += 1
                 organ_constraint_passed = False
 
         # Store metadata in the sample via a wrapper or side-effect
@@ -481,8 +494,12 @@ class TumorGenerator:
                 c = np.asarray(focus.center)
                 r = focus.params.get("radius", 1.0)
                 if np.any(c - r < strict_lo) or np.any(c + r > strict_hi):
+                    self._reject_stats["layer2_mcx_bbox"] += 1
                     sample._organ_constraint_passed = False
                     break
+
+        if sample._organ_constraint_passed:
+            self._reject_stats["accepted"] += 1
 
         return sample
 
