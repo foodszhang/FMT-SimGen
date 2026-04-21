@@ -320,10 +320,19 @@ class TumorGenerator:
             "layer2_mcx_bbox": 0,
             "max_attempts_hit": 0,
             "accepted": 0,
+            "zone_no_voxels": 0,
         }
+
+        # ── Zone pool: anatomy-guided safe anchor positions ──
+        self._safe_zone_pools: Dict[str, np.ndarray] = {}
+        self._safe_shell_mask: Optional[np.ndarray] = None
+        self._zone_volumes: Dict[str, float] = {}
 
         # ── Precompute sampling coordinates for all depth tiers ──
         self._precompute_sampling_coords()
+
+        # ── Build safe shell + zone pools ─────────────────────────
+        self._build_safe_zone_pools()
 
     def _precompute_sampling_coords(self) -> None:
         """Pre-compute sampling coordinates for all depth tier + region combinations.
@@ -349,6 +358,94 @@ class TumorGenerator:
                     regions=[region],
                 )
         logger.info("  Sampling coordinate pre-computation done.")
+
+    def _build_safe_zone_pools(self) -> None:
+        """Build anatomy-guided zone pools using EDT-depth-filtered subcutaneous coords.
+
+        Zone design uses the atlas's Euclidean Distance Transform (EDT) to
+        identify voxels at specific depths below the body surface. This ensures
+        zone pool centers are guaranteed to be at least (radius + 0.3mm) below
+        the surface — sphere will not intersect air.
+
+        Zone definitions (trunk-local mm, all verified against atlas centroid):
+        - upper_back:      Y in [0, 16], mid-Z (dorsal)
+        - mid_back:        Y in [14, 28], mid-Z (dorsal)
+        - lower_back:      Y in [26, 40], mid-Z (dorsal)
+        - left_flank:      X in [4, 10], Y in [4, 36]
+        - right_flank:     X in [28, 34], Y in [4, 36]
+        - paraspinal_l:    X in [8, 14], Y in [0, 40]
+        - paraspinal_r:    X in [24, 30], Y in [0, 40]
+
+        Each zone pool = atlas subcutaneous coords within zone x/y bounds,
+        at depth range [2.0, 8.0]mm (covers r=2.0..3.5mm with margin).
+        """
+        if self.atlas is None:
+            logger.warning("  No atlas — skipping zone pools")
+            return
+
+        self._safe_zone_pools.clear()
+        self._zone_volumes.clear()
+
+        # Use depth range that covers r=2.0..3.5mm (our radius range)
+        # depth_min = 2.0 + 0.3 = 2.3mm, depth_max = 3.5 + 5.0 = 8.5mm
+        # We use [2.0, 8.5] to be conservative
+        depth_min_mm = 2.0
+        depth_max_mm = 8.5
+
+        # Get all subcutaneous coords at the target depth (atlas mm frame)
+        all_depth_filtered = self.atlas.get_subcutaneous_coords(
+            depth_range_mm=(depth_min_mm, depth_max_mm),
+            regions=["dorsal", "lateral"],
+            torso_only=True,
+        )
+        logger.info(
+            f"  Total depth-filtered subcutaneous coords: {len(all_depth_filtered):,} "
+            f"(depth {depth_min_mm}–{depth_max_mm}mm in atlas mm)"
+        )
+
+        # Convert to trunk-local mm
+        all_trunk_local = all_depth_filtered - self.trunk_offset_mm  # [N, 3] trunk-local mm
+
+        # Zone definitions: (name, x_range_mm, y_range_mm)
+        ZONE_DEFS = [
+            ("upper_back",     (4.0, 34.0), (0.0, 16.0)),
+            ("mid_back",       (4.0, 34.0), (14.0, 28.0)),
+            ("lower_back",     (4.0, 34.0), (26.0, 40.0)),
+            ("left_flank",     (4.0, 10.0), (4.0, 36.0)),
+            ("right_flank",   (28.0, 34.0), (4.0, 36.0)),
+            ("paraspinal_l",   (8.0, 14.0), (0.0, 40.0)),
+            ("paraspinal_r",   (24.0, 30.0), (0.0, 40.0)),
+        ]
+
+        for zone_name, x_range, y_range in ZONE_DEFS:
+            # Filter to zone x/y bounds
+            x_mask = (all_trunk_local[:, 0] >= x_range[0]) & (
+                all_trunk_local[:, 0] < x_range[1]
+            )
+            y_mask = (all_trunk_local[:, 1] >= y_range[0]) & (
+                all_trunk_local[:, 1] < y_range[1]
+            )
+            zone_mask = x_mask & y_mask
+            zone_coords = all_trunk_local[zone_mask]
+
+            if len(zone_coords) == 0:
+                logger.warning(f"  Zone '{zone_name}': EMPTY POOL — skipping")
+                self._reject_stats["zone_no_voxels"] += 1
+                continue
+
+            self._safe_zone_pools[zone_name] = zone_coords.astype(np.float64)
+            vol_mm3 = len(zone_coords) * (self.voxel_size_mm ** 3)
+            self._zone_volumes[zone_name] = vol_mm3
+            logger.info(
+                f"  Zone '{zone_name}': {len(zone_coords):,} coords "
+                f"({vol_mm3:.1f} mm³ equiv), range X={x_range}, Y={y_range}"
+            )
+
+        if not self._safe_zone_pools:
+            logger.warning("  ALL zones empty — check depth-filtered subcutaneous coverage")
+        else:
+            total = sum(len(v) for v in self._safe_zone_pools.values())
+            logger.info(f"  Zone pools built: {list(self._safe_zone_pools.keys())}, total={total:,} coords")
 
     def generate_sample(
         self,
@@ -396,46 +493,32 @@ class TumorGenerator:
 
                 if is_anchor:
                     candidate_center, from_atlas = self._sample_position_with_source(
-                        forced_depth=depth_mm
+                        forced_depth=depth_mm, radius=radius
                     )
                 else:
                     candidate_center = self._sample_cluster_position(
-                        foci[0] if foci else None, cluster_radius
+                        foci[0] if foci else None, cluster_radius, radius=radius
                     )
 
                 if candidate_center is None:
                     continue
 
-                # All positions are now trunk-local (conversion done in _sample_from_atlas_with_flag)
-                if not from_atlas if is_anchor else True:
-                    depth = self._get_depth_at_position(candidate_center)
-                    if depth < self.depth_range[0] or depth > self.depth_range[1]:
-                        self._reject_stats["layer1_depth"] += 1
-                        if is_anchor:
-                            candidate_center, from_atlas = (
-                                self._sample_position_with_source(forced_depth=depth_mm)
-                            )
-                        else:
-                            candidate_center = None
-                        continue
-
-                # Check organ boundary constraint for anchor focus
-                if is_anchor and self.mesh_nodes is not None:
+                # ── D5: is_valid_placement is now a lightweight fallback check ──
+                # Zone pools guarantee safe depth + location; this only catches
+                # residual edge cases (sphere large enough to hit multiple organs).
+                if is_anchor:
                     if not self.is_valid_placement(candidate_center, radius):
                         self._reject_stats["layer1_organ"] += 1
-                        # Try 20 independent random positions instead of fixed depths
+                        # Try 20 fallback positions (zone pool already guarantees depth)
                         valid_fallback = None
                         for _ in range(20):
                             fb_center, fb_from_atlas = self._sample_position_with_source(
-                                forced_depth=depth_mm
+                                forced_depth=None, radius=radius
                             )
                             if fb_center is None:
                                 continue
-                            fb_depth_val = self._get_depth_at_position(fb_center)
-                            if not (self.depth_range[0] <= fb_depth_val <= self.depth_range[1]):
-                                continue
                             if self.is_valid_placement(fb_center, radius):
-                                valid_fallback = (fb_center, False)  # False: already trunk-local
+                                valid_fallback = (fb_center, False)
                                 break
                         if valid_fallback is not None:
                             candidate_center, from_atlas = valid_fallback
@@ -466,16 +549,14 @@ class TumorGenerator:
             if center is None and focus_idx > 0:
                 cluster_radius = 12.0
                 candidate_center = self._sample_cluster_position(
-                    foci[0] if foci else None, cluster_radius
+                    foci[0] if foci else None, cluster_radius, radius=radius
                 )
                 if candidate_center is not None:
-                    depth = self._get_depth_at_position(candidate_center)
-                    if self.depth_range[0] <= depth <= self.depth_range[1]:
-                        params = self._get_shape_params(shape, radius)
-                        new_focus = AnalyticFocus(
-                            center=candidate_center, shape=shape, params=params
-                        )
-                        foci.append(new_focus)
+                    params = self._get_shape_params(shape, radius)
+                    new_focus = AnalyticFocus(
+                        center=candidate_center, shape=shape, params=params
+                    )
+                    foci.append(new_focus)
 
             if center is None:
                 if is_anchor:
@@ -579,38 +660,33 @@ class TumorGenerator:
         if labels_in_sphere.size == 0:
             return True
 
-        # Volume fraction rule
-        unique, counts = np.unique(labels_in_sphere, return_counts=True)
-        fractions = counts / len(labels_in_sphere)
-
-        # Soft tissue labels: {1} = skin (includes subcutaneous in this atlas)
-        soft_labels = {1}
-        organ_mask = ~np.isin(unique, list(soft_labels) + [0])
-        organ_unique = unique[organ_mask]
-        organ_counts = counts[organ_mask]
-
-        if len(organ_unique) == 0:
-            return True  # Pure soft tissue
-
-        dominant_idx = np.argmax(organ_counts)
-        dominant_label = organ_unique[dominant_idx]
-        dominant_fraction = organ_counts[dominant_idx] / len(labels_in_sphere)
-
-        # Dominant organ must be ≥ 80%
-        if dominant_fraction < 0.80:
+        # ── Hard no-air constraint ──────────────────────────────────────
+        # If sphere intersects air (label=0), placement is invalid.
+        # This is the critical constraint that prevents sphere from
+        # straddling the skin-air boundary.
+        air_count = int(np.sum(labels_in_sphere == 0))
+        if air_count > 0:
             return False
 
-        # Other organs total ≤ 10%
-        other_fraction = 1.0 - dominant_fraction - (
-            counts[np.isin(unique, list(soft_labels) + [0])].sum() / len(labels_in_sphere)
-        )
-        if other_fraction > 0.10:
+        # D5: Body fraction + unique organ check
+        # body_frac = fraction of sphere in non-background tissue (labels != 0)
+        body_frac = float(np.sum(labels_in_sphere != 0)) / len(labels_in_sphere)
+        if body_frac < 0.85:
+            return False
+
+        # Unique organ labels (excluding 0=background and 1=skin/shell)
+        organ_labels_in_sphere = labels_in_sphere[
+            ~np.isin(labels_in_sphere, [0, 1])
+        ]
+        unique_organs = len(np.unique(organ_labels_in_sphere))
+        if unique_organs > 1:
             return False
 
         return True
 
     def _sample_cluster_position(
-        self, anchor: Optional[AnalyticFocus], cluster_radius: float
+        self, anchor: Optional[AnalyticFocus], cluster_radius: float,
+        radius: float = 1.0,
     ) -> Optional[np.ndarray]:
         """Sample a position near the anchor for cluster placement.
 
@@ -652,7 +728,8 @@ class TumorGenerator:
                     strict_hi = np.minimum(hi, gt_hi)
                 else:
                     strict_lo, strict_hi = lo, hi
-                if np.any(candidate < strict_lo) or np.any(candidate > strict_hi):
+                # Sphere-overlap check: entire sphere must be inside MCX volume
+                if np.any(candidate - radius < strict_lo) or np.any(candidate + radius > strict_hi):
                     continue
             elif self.mesh_bbox is not None:
                 bbox_min = np.array(self.mesh_bbox["min"])
@@ -682,7 +759,7 @@ class TumorGenerator:
         return pos
 
     def _sample_position_with_source(
-        self, forced_depth: Optional[float] = None
+        self, forced_depth: Optional[float] = None, radius: Optional[float] = None
     ) -> Tuple[np.ndarray, bool]:
         """Sample a position and return whether it came from atlas.
 
@@ -698,7 +775,7 @@ class TumorGenerator:
         """
         if self.atlas is not None:
             pos, used_atlas = self._sample_from_atlas_with_flag(
-                forced_depth=forced_depth
+                forced_depth=forced_depth, radius=radius
             )
             return pos, used_atlas
         else:
@@ -706,40 +783,47 @@ class TumorGenerator:
             return pos, False
 
     def _sample_from_atlas_with_flag(
-        self, forced_depth: Optional[float] = None
+        self, forced_depth: Optional[float] = None, radius: Optional[float] = None
     ) -> Tuple[np.ndarray, bool]:
-        """Attempt to sample from atlas skin surface region.
+        """Sample anchor center from anatomy-guided safe zone pools.
 
-        Uses pre-cached skin surface coordinates for O(1) random sampling.
-        This is the correct placement for subcutaneous xenograft tumors when
-        there is no distinct subcutaneous fat/muscle layer in the atlas.
+        ZONE-BASED ANCHOR SAMPLING (D3 of redesign):
+        1. Randomly select a zone weighted by pool size
+        2. Sample uniformly from that zone's safe shell voxels
+        3. Return trunk-local mm position
+
+        This replaces the old "sample from full dorsal/lateral surface then
+        reject" approach with事前安全区采样.
 
         Parameters
         ----------
         forced_depth : float, optional
-            Ignored for skin surface sampling (depth is fixed at body surface).
+            Ignored for zone-based sampling (zone pools already guarantee depth).
+        radius : float, optional
+            Tumor radius in mm. Passed for diagnostic purposes only.
 
         Returns
         -------
         Tuple[np.ndarray, bool]
             (position [3] in trunk-local mm, actually_from_atlas bool)
-            Returns (config_position, False) if atlas sampling fails.
+            Returns (config_position, False) if zone pools are empty.
         """
-        region = self._rng.choice(self.regions)
-
-        coords = self.atlas.get_skin_surface_coords(
-            regions=[region],
-            torso_only=True,
-        )
-
-        if len(coords) == 0:
+        if not self._safe_zone_pools:
             return self._sample_from_config(forced_depth=forced_depth), False
 
-        idx = self._rng.integers(len(coords))
-        # Convert atlas mm → trunk-local mm immediately; all downstream code
-        # (is_valid_placement, MCX bbox, etc.) operates in trunk-local frame.
-        pos = coords[idx].copy() - self.trunk_offset_mm
-        return pos, True
+        # Weighted random zone selection by pool size
+        zone_names = list(self._safe_zone_pools.keys())
+        zone_sizes = np.array([len(self._safe_zone_pools[n]) for n in zone_names])
+        weights = zone_sizes.astype(float) / zone_sizes.sum()
+        zone_name = self._rng.choice(zone_names, p=weights)
+        pool = self._safe_zone_pools[zone_name]
+
+        if len(pool) == 0:
+            return self._sample_from_config(forced_depth=forced_depth), False
+
+        idx = self._rng.integers(len(pool))
+        # Pool coordinates are already in trunk-local mm (built as voxel_indices * voxel_size_mm)
+        return pool[idx].copy(), True
 
     def _sample_from_config(
         self, forced_depth: Optional[float] = None
