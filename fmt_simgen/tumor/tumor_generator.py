@@ -315,6 +315,16 @@ class TumorGenerator:
 
         # ── Rejection diagnostic counters ───────────────────────────
         self._reject_stats = {
+            # layer1_organ细分：来自anchor还是cluster
+            "anchor_is_valid_false": 0,       # anchor首调is_validplacement失败
+            "anchor_fallback_exhausted": 0,    # anchor 20次fallback全失败
+            "cluster_is_valid_false": 0,       # cluster首调is_validplacement失败
+            "cluster_fallback_exhausted": 0,    # cluster 20次fallback全失败
+            # is_validplacement内部三条规则各自的失败计数
+            "reject_air": 0,           # 球体碰到空气
+            "reject_body_frac": 0,     # body_frac < 0.85
+            "reject_multi_organ": 0,   # unique organ > 1
+            # 旧兼容key（保留方便看总数）
             "layer1_organ": 0,
             "layer1_depth": 0,
             "layer2_mcx_bbox": 0,
@@ -333,6 +343,10 @@ class TumorGenerator:
 
         # ── Build safe shell + zone pools ─────────────────────────
         self._build_safe_zone_pools()
+
+        # ── Pre-compute final-valid pools per radius bin (S3) ────
+        self._final_valid_pools: Dict[str, Dict[str, np.ndarray]] = {}
+        self._build_final_valid_pools()
 
     def _precompute_sampling_coords(self) -> None:
         """Pre-compute sampling coordinates for all depth tier + region combinations.
@@ -447,6 +461,50 @@ class TumorGenerator:
             total = sum(len(v) for v in self._safe_zone_pools.values())
             logger.info(f"  Zone pools built: {list(self._safe_zone_pools.keys())}, total={total:,} coords")
 
+    def _build_final_valid_pools(self) -> None:
+        """Pre-compute valid positions per radius bin using is_valid_placement.
+
+        S3: Instead of sampling from zone pools and rejecting 80%+ via is_valid_placement,
+        pre-filter all zone pool positions for each radius bin and store the valid subsets.
+        Sampling then becomes near-100% acceptance.
+
+        Radius bins: small [2.0, 2.5], medium [2.5, 3.0], large [3.0, 3.5]mm.
+        For each bin, run is_valid_placement with the bin's representative radius
+        (midpoint) on all positions across all zone pools.
+        """
+        if not self._safe_zone_pools or self.merged_voxel_volume is None:
+            return
+
+        # Define radius bins and their representative radii
+        radius_bins = [
+            ("small",  2.0, 2.5, 2.25),
+            ("medium", 2.5, 3.0, 2.75),
+            ("large",  3.0, 3.5, 3.25),
+        ]
+
+        total_valid = 0
+        for bin_name, r_min, r_max, r_rep in radius_bins:
+            bin_valid: Dict[str, np.ndarray] = {}
+            for zone_name, pool in self._safe_zone_pools.items():
+                if len(pool) == 0:
+                    continue
+
+                # Test each position with representative radius
+                valid_mask = np.zeros(len(pool), dtype=bool)
+                for i, pos in enumerate(pool):
+                    ok, _ = self.is_valid_placement(pos, r_rep, record_rejections=False)
+                    valid_mask[i] = ok
+
+                valid_positions = pool[valid_mask]
+                bin_valid[zone_name] = valid_positions.astype(np.float64)
+                total_valid += len(valid_positions)
+
+            self._final_valid_pools[bin_name] = bin_valid
+            bin_total = sum(len(v) for v in bin_valid.values())
+            logger.info(f"  Final-valid pool '{bin_name}' (r={r_min}..{r_max}mm): {bin_total:,} positions")
+
+        logger.info(f"  Final-valid pools total: {total_valid:,} positions across {len(self._final_valid_pools)} bins")
+
     def generate_sample(
         self,
         num_foci: Optional[int] = None,
@@ -496,35 +554,61 @@ class TumorGenerator:
                         forced_depth=depth_mm, radius=radius
                     )
                 else:
+                    # Zone-aware cluster: sample from anchor's zone pool
+                    anchor_center = foci[0].center if foci else None
                     candidate_center = self._sample_cluster_position(
-                        foci[0] if foci else None, cluster_radius, radius=radius
+                        anchor_center, cluster_radius, radius=radius
                     )
 
                 if candidate_center is None:
                     continue
 
-                # ── D5: is_valid_placement is now a lightweight fallback check ──
-                # Zone pools guarantee safe depth + location; this only catches
-                # residual edge cases (sphere large enough to hit multiple organs).
-                if is_anchor:
-                    if not self.is_valid_placement(candidate_center, radius):
-                        self._reject_stats["layer1_organ"] += 1
-                        # Try 20 fallback positions (zone pool already guarantees depth)
-                        valid_fallback = None
-                        for _ in range(20):
-                            fb_center, fb_from_atlas = self._sample_position_with_source(
-                                forced_depth=None, radius=radius
-                            )
-                            if fb_center is None:
-                                continue
-                            if self.is_valid_placement(fb_center, radius):
-                                valid_fallback = (fb_center, False)
-                                break
-                        if valid_fallback is not None:
-                            candidate_center, from_atlas = valid_fallback
-                        else:
-                            candidate_center = None
+                # ── is_valid_placement check for anchor + cluster ───────────
+                is_valid, reason = self.is_valid_placement(candidate_center, radius)
+                if is_valid:
+                    pass  # OK
+                elif is_anchor:
+                    # Anchor: try 20 fallbacks from zone pools
+                    self._reject_stats["anchor_is_valid_false"] += 1
+                    valid_fallback = None
+                    for _ in range(20):
+                        fb_center, fb_from_atlas = self._sample_position_with_source(
+                            forced_depth=None, radius=radius
+                        )
+                        if fb_center is None:
                             continue
+                        fb_valid, _ = self.is_valid_placement(fb_center, radius)
+                        if fb_valid:
+                            valid_fallback = (fb_center, False)
+                            break
+                    if valid_fallback is not None:
+                        candidate_center, from_atlas = valid_fallback
+                    else:
+                        self._reject_stats["anchor_fallback_exhausted"] += 1
+                        self._reject_stats["layer1_organ"] += 1
+                        candidate_center = None
+                        continue
+                else:
+                    # Cluster: try 20 fallbacks (same zone)
+                    self._reject_stats["cluster_is_valid_false"] += 1
+                    valid_fallback = None
+                    for _ in range(20):
+                        fb_center = self._sample_cluster_position(
+                            anchor_center, cluster_radius, radius=radius
+                        )
+                        if fb_center is None:
+                            continue
+                        fb_valid, _ = self.is_valid_placement(fb_center, radius)
+                        if fb_valid:
+                            valid_fallback = fb_center
+                            break
+                    if valid_fallback is not None:
+                        candidate_center = valid_fallback
+                    else:
+                        self._reject_stats["cluster_fallback_exhausted"] += 1
+                        self._reject_stats["layer1_organ"] += 1
+                        candidate_center = None
+                        continue
 
                 params = self._get_shape_params(shape, radius)
                 # For atlas-sampled foci, store original atlas coords for debug serialization
@@ -549,14 +633,20 @@ class TumorGenerator:
             if center is None and focus_idx > 0:
                 cluster_radius = 12.0
                 candidate_center = self._sample_cluster_position(
-                    foci[0] if foci else None, cluster_radius, radius=radius
+                    foci[0].center if foci else None, cluster_radius, radius=radius
                 )
                 if candidate_center is not None:
-                    params = self._get_shape_params(shape, radius)
-                    new_focus = AnalyticFocus(
-                        center=candidate_center, shape=shape, params=params
+                    # zone pool guarantees safety, but check is_valid_placement
+                    # with record_rejections=False since this is a last-resort fallback
+                    ivp_ok, _ = self.is_valid_placement(
+                        candidate_center, radius, record_rejections=False
                     )
-                    foci.append(new_focus)
+                    if ivp_ok:
+                        params = self._get_shape_params(shape, radius)
+                        new_focus = AnalyticFocus(
+                            center=candidate_center, shape=shape, params=params
+                        )
+                        foci.append(new_focus)
 
             if center is None:
                 if is_anchor:
@@ -592,31 +682,33 @@ class TumorGenerator:
 
         return sample
 
-    def is_valid_placement(self, center: np.ndarray, radius: float) -> bool:
-        """Check if tumor placement is valid (no cross-organ boundary).
+    def is_valid_placement(
+        self, center: np.ndarray, radius: float,
+        record_rejections: bool = True,
+    ) -> Tuple[bool, Optional[str]]:
+        """Check if tumor placement is valid; optionally record rejection reason.
 
-        Rules:
-        - Only soft tissue (skin, muscle, fat, tongue) -> OK
-        - Involves 1 organ type -> OK
-        - Involves 2+ different organ types -> Invalid
-
-        Biological basis:
-        - Subcutaneous xenograft stays within single tissue layer
-        - Orthotopic tumors grow within specific organ, not cross-boundary
-        - Different organs have very different optical properties
-          (muscle mu_a=0.087 vs liver mu_a=0.352), breaking FEM homogeneity
+        Three criteria (all must pass):
+        1. No air voxels in sphere (hard constraint)
+        2. body_frac >= 0.85 (≥85% of sphere in tissue, not air)
+        3. At most 1 unique organ label (excluding 0=air, 1=skin)
 
         Parameters
         ----------
         center : np.ndarray
-            Tumor center [3] in mm.
+            Tumor center [3] in mm (trunk-local).
         radius : float
             Tumor radius in mm.
+        record_rejections : bool
+            If True, increment reject_{air,body_frac,multi_organ} counters
+            when returning False.
 
         Returns
         -------
-        bool
-            True if placement is valid.
+        Tuple[bool, Optional[str]]
+            (is_valid, rejection_reason)
+            rejection_reason is None if valid, else one of:
+            "air", "body_frac", "multi_organ"
         """
         if self._organ_constraint_disabled:
             return True  # Constraint disabled via config
@@ -658,88 +750,133 @@ class TumorGenerator:
         labels_in_sphere = subvol[mask]
 
         if labels_in_sphere.size == 0:
-            return True
+            return True, None
 
-        # ── Hard no-air constraint ──────────────────────────────────────
-        # If sphere intersects air (label=0), placement is invalid.
-        # This is the critical constraint that prevents sphere from
-        # straddling the skin-air boundary.
+        # ── Rule 1: Hard no-air constraint ───────────────────────────────
         air_count = int(np.sum(labels_in_sphere == 0))
         if air_count > 0:
-            return False
+            if record_rejections:
+                self._reject_stats["reject_air"] += 1
+            return False, "air"
 
-        # D5: Body fraction + unique organ check
-        # body_frac = fraction of sphere in non-background tissue (labels != 0)
+        # ── Rule 2: Body fraction ≥ 0.85 ────────────────────────────────
         body_frac = float(np.sum(labels_in_sphere != 0)) / len(labels_in_sphere)
         if body_frac < 0.85:
-            return False
+            if record_rejections:
+                self._reject_stats["reject_body_frac"] += 1
+            return False, "body_frac"
 
-        # Unique organ labels (excluding 0=background and 1=skin/shell)
+        # ── Rule 3: At most 1 unique organ ─────────────────────────────
         organ_labels_in_sphere = labels_in_sphere[
             ~np.isin(labels_in_sphere, [0, 1])
         ]
         unique_organs = len(np.unique(organ_labels_in_sphere))
         if unique_organs > 1:
-            return False
+            if record_rejections:
+                self._reject_stats["reject_multi_organ"] += 1
+            return False, "multi_organ"
 
-        return True
+        return True, None
 
     def _sample_cluster_position(
-        self, anchor: Optional[AnalyticFocus], cluster_radius: float,
+        self, anchor_center: Optional[np.ndarray], cluster_radius: float,
         radius: float = 1.0,
     ) -> Optional[np.ndarray]:
-        """Sample a position near the anchor for cluster placement.
+        """Sample a cluster center from the pre-filtered final-valid zone pool (S3).
+
+        S3: Uses _final_valid_pools (pre-filtered by is_valid_placement) instead of
+        _safe_zone_pools. Cluster positions are sampled from the same zone as the anchor
+        using the radius-appropriate bin.
 
         Parameters
         ----------
-        anchor : AnalyticFocus or None
-            Anchor focus to cluster around.
+        anchor_center : np.ndarray or None
+            Trunk-local mm center of the anchor focus.
         cluster_radius : float
-            Maximum distance from anchor.
+            Ignored (kept for API compatibility; zone pool IS the constraint).
+        radius : float
+            Tumor radius for determining radius bin and MCX bbox check.
 
         Returns
         -------
         np.ndarray or None
-            Sampled position or None if sampling fails.
+            Trunk-local mm center, or None if all final-valid pools are empty.
         """
-        if anchor is None:
-            return self._sample_position_with_source()[0]
+        # Determine radius bin
+        if radius < 2.5:
+            r_bin = "small"
+        elif radius < 3.0:
+            r_bin = "medium"
+        else:
+            r_bin = "large"
 
-        anchor_center = anchor.center
+        # Fallback to general sampling if no anchor
+        if anchor_center is None:
+            pos, _ = self._sample_position_with_source(radius=radius)
+            return pos
 
-        for _ in range(50):
-            r = self._rng.uniform(0, cluster_radius)
-            theta = self._rng.uniform(0, 2 * np.pi)
-            phi = self._rng.uniform(0, np.pi)
+        # Find which zone the anchor is in (use safe_zone_pools for anchor lookup)
+        anchor_zone = None
+        for zone_name, pool in self._safe_zone_pools.items():
+            if len(pool) == 0:
+                continue
+            dists = np.linalg.norm(pool[:, :2] - anchor_center[:2], axis=1)
+            if dists.min() < 5.0:
+                anchor_zone = zone_name
+                break
 
-            offset = r * np.array(
-                [np.sin(phi) * np.cos(theta), np.sin(phi) * np.sin(theta), np.cos(phi)]
-            )
+        # Try final-valid pools first (S3: pre-filtered by is_valid_placement)
+        if self._final_valid_pools and r_bin in self._final_valid_pools:
+            fvp = self._final_valid_pools[r_bin]
+            if anchor_zone is not None and anchor_zone in fvp and len(fvp[anchor_zone]) > 0:
+                zone_pool = fvp[anchor_zone]
+            elif fvp:
+                zone_pool = self._rng.choice(list(fvp.values()))
+            else:
+                zone_pool = None
 
-            candidate = anchor_center + offset
+            if zone_pool is not None and len(zone_pool) > 0:
+                idx = self._rng.integers(len(zone_pool))
+                candidate = zone_pool[idx].copy()
+                # MCX bbox check
+                if self.mcx_bbox_mm is not None and not self._organ_constraint_disabled:
+                    lo, hi = self.mcx_bbox_mm
+                    if self.gt_offset_mm is not None and self.gt_shape is not None:
+                        gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
+                        strict_lo = np.maximum(lo, self.gt_offset_mm)
+                        strict_hi = np.minimum(hi, gt_hi)
+                    else:
+                        strict_lo, strict_hi = lo, hi
+                    if np.any(candidate - radius < strict_lo) or np.any(candidate + radius > strict_hi):
+                        return None
+                return candidate
 
-            # Use MCX bbox as primary constraint (trunk-local volume bounds)
-            # Fall back to mesh_bbox if mcx_bbox not available
-            if self.mcx_bbox_mm is not None and not self._organ_constraint_disabled:
-                lo, hi = self.mcx_bbox_mm
-                if self.gt_offset_mm is not None and self.gt_shape is not None:
-                    gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
-                    strict_lo = np.maximum(lo, self.gt_offset_mm)
-                    strict_hi = np.minimum(hi, gt_hi)
-                else:
-                    strict_lo, strict_hi = lo, hi
-                # Sphere-overlap check: entire sphere must be inside MCX volume
-                if np.any(candidate - radius < strict_lo) or np.any(candidate + radius > strict_hi):
-                    continue
-            elif self.mesh_bbox is not None:
-                bbox_min = np.array(self.mesh_bbox["min"])
-                bbox_max = np.array(self.mesh_bbox["max"])
-                if np.any(candidate < bbox_min) or np.any(candidate > bbox_max):
-                    continue
+        # Fallback to safe_zone_pools (high rejection, but available)
+        if anchor_zone is not None and len(self._safe_zone_pools.get(anchor_zone, [])) > 0:
+            zone_pool = self._safe_zone_pools[anchor_zone]
+        elif self._safe_zone_pools:
+            zone_pool = self._rng.choice(list(self._safe_zone_pools.values()))
+        else:
+            return None
 
-            return candidate
+        if zone_pool is None or len(zone_pool) == 0:
+            return None
 
-        return None
+        idx = self._rng.integers(len(zone_pool))
+        candidate = zone_pool[idx].copy()
+
+        if self.mcx_bbox_mm is not None and not self._organ_constraint_disabled:
+            lo, hi = self.mcx_bbox_mm
+            if self.gt_offset_mm is not None and self.gt_shape is not None:
+                gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
+                strict_lo = np.maximum(lo, self.gt_offset_mm)
+                strict_hi = np.minimum(hi, gt_hi)
+            else:
+                strict_lo, strict_hi = lo, hi
+            if np.any(candidate - radius < strict_lo) or np.any(candidate + radius > strict_hi):
+                return None
+
+        return candidate
 
     def _sample_num_foci(self) -> int:
         """Sample number of foci from distribution."""
@@ -785,33 +922,56 @@ class TumorGenerator:
     def _sample_from_atlas_with_flag(
         self, forced_depth: Optional[float] = None, radius: Optional[float] = None
     ) -> Tuple[np.ndarray, bool]:
-        """Sample anchor center from anatomy-guided safe zone pools.
+        """Sample anchor center from pre-filtered final-valid zone pools (S3).
 
-        ZONE-BASED ANCHOR SAMPLING (D3 of redesign):
-        1. Randomly select a zone weighted by pool size
-        2. Sample uniformly from that zone's safe shell voxels
-        3. Return trunk-local mm position
+        S3: Uses _final_valid_pools (pre-filtered by is_valid_placement) instead of
+        _safe_zone_pools. This gives near-100% acceptance instead of ~18%.
 
-        This replaces the old "sample from full dorsal/lateral surface then
-        reject" approach with事前安全区采样.
+        Radius-aware: selects the appropriate radius bin to sample from.
 
         Parameters
         ----------
         forced_depth : float, optional
             Ignored for zone-based sampling (zone pools already guarantee depth).
         radius : float, optional
-            Tumor radius in mm. Passed for diagnostic purposes only.
+            Tumor radius in mm. Determines which radius bin to sample from.
 
         Returns
         -------
         Tuple[np.ndarray, bool]
             (position [3] in trunk-local mm, actually_from_atlas bool)
-            Returns (config_position, False) if zone pools are empty.
+            Returns (config_position, False) if all final-valid pools are empty.
         """
+        # Determine radius bin
+        if radius is None:
+            r_bin = "medium"  # default
+        elif radius < 2.5:
+            r_bin = "small"
+        elif radius < 3.0:
+            r_bin = "medium"
+        else:
+            r_bin = "large"
+
+        # Try final-valid pools first (pre-filtered by is_valid_placement)
+        if self._final_valid_pools and r_bin in self._final_valid_pools:
+            fvp = self._final_valid_pools[r_bin]
+            if fvp:
+                # Weighted random zone selection by valid pool size
+                zone_names = list(fvp.keys())
+                zone_sizes = np.array([len(fvp[n]) for n in zone_names])
+                if zone_sizes.sum() == 0:
+                    return self._sample_from_config(forced_depth=forced_depth), False
+                weights = zone_sizes.astype(float) / zone_sizes.sum()
+                zone_name = self._rng.choice(zone_names, p=weights)
+                pool = fvp[zone_name]
+                if len(pool) > 0:
+                    idx = self._rng.integers(len(pool))
+                    return pool[idx].copy(), True
+
+        # Fallback to safe_zone_pools (old behavior, high rejection)
         if not self._safe_zone_pools:
             return self._sample_from_config(forced_depth=forced_depth), False
 
-        # Weighted random zone selection by pool size
         zone_names = list(self._safe_zone_pools.keys())
         zone_sizes = np.array([len(self._safe_zone_pools[n]) for n in zone_names])
         weights = zone_sizes.astype(float) / zone_sizes.sum()
@@ -822,7 +982,6 @@ class TumorGenerator:
             return self._sample_from_config(forced_depth=forced_depth), False
 
         idx = self._rng.integers(len(pool))
-        # Pool coordinates are already in trunk-local mm (built as voxel_indices * voxel_size_mm)
         return pool[idx].copy(), True
 
     def _sample_from_config(
