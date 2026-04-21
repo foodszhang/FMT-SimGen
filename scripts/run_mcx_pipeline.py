@@ -229,9 +229,9 @@ def main() -> None:
     # Compute MCX trunk volume center in world coordinates (mm)
     # The reference projection centers at (nx/2, ny/2, nz/2) in voxel space,
     # converts to world mm, then SUBTRACTS volume_center_world.
-    # The trunk_offset_mm=[0, 30, 0] shifts the Y center by 30mm.
+    # The trunk_offset_mm=[0, 34, 0] shifts the Y center by 34mm.
     # X and Z are centered at 0 in the atlas, so cx=cz=0.
-    # Y: center = (200/2)*0.2 + 30 = 50.0mm, but we subtract the center
+    # Y: center = (200/2)*0.2 + 34 = 54.0mm, but we subtract the center
     #    so that world Y is centered at 0 for projection.
     # The working centering that produced valid projections was (0, 30, 0),
     # which means the centering is relative to the ATLAS center (not the

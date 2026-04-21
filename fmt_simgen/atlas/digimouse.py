@@ -545,6 +545,75 @@ class DigimouseAtlas:
 
         return self._subq_coords_cache[cache_key]
 
+    def get_skin_surface_coords(
+        self,
+        regions: List[str],
+        torso_only: bool = True,
+    ) -> np.ndarray:
+        """Return physical coordinates of skin (label=1) surface voxels.
+
+        Unlike get_subcutaneous_coords which samples below the skin surface,
+        this returns skin surface positions — the correct placement for
+        subcutaneous xenograft tumors when no distinct subcutaneous layer exists.
+
+        Parameters
+        ----------
+        regions : List[str]
+            Body regions: "dorsal" (+Z), "ventral" (-Z), "lateral" (sides).
+        torso_only : bool, default True
+            If True, exclude head (Y < 30mm) and tail (Y > 85mm).
+
+        Returns
+        -------
+        np.ndarray
+            Physical coordinates [M, 3] in mm.
+        """
+        cache_key = (tuple(sorted(regions)), torso_only)
+        if cache_key not in self._subq_coords_cache:
+            vol = self.volume
+            x_dim, y_dim, z_dim = vol.shape
+
+            # Skin voxels (label=1)
+            skin_mask = vol == 1
+
+            # Body surface: skin voxels adjacent to background (label=0)
+            # Check 6-neighbor connectivity to background
+            from scipy.ndimage import binary_erosion
+            body_mask = vol != 0
+            interior_mask = binary_erosion(body_mask, structure=np.ones((3, 3, 3)))
+            surface_skin = skin_mask & ~interior_mask
+
+            # Filter by region
+            z_center = z_dim // 2
+            if "dorsal" in regions and "ventral" not in regions and "lateral" not in regions:
+                surface_skin[:, :, :z_center] = False
+            elif "ventral" in regions and "dorsal" not in regions and "lateral" not in regions:
+                surface_skin[:, :, z_center:] = False
+            elif "lateral" in regions and "dorsal" not in regions and "ventral" not in regions:
+                surface_skin[:, :, :] = False  # handled below by X extent
+
+            # Torso-only: Y in [340, 740] voxel = [34, 74] mm atlas
+            # (matches mcx_volume.py crop: y_start=340, y_end=740 at 0.1mm/voxel)
+            if torso_only:
+                surface_skin[:, :340, :] = False
+                surface_skin[:, 740:, :] = False
+
+            # For lateral: X near body edges (X < 50 or X > 330)
+            if "lateral" in regions and "dorsal" not in regions and "ventral" not in regions:
+                surface_skin = np.zeros_like(surface_skin)
+                surface_skin[:50, :, :] = (vol[:50, :, :] == 1)
+                surface_skin[330:, :, :] = (vol[330:, :, :] == 1)
+
+            voxel_coords = np.argwhere(surface_skin)  # [M, 3] voxel indices
+            physical_coords = voxel_coords.astype(np.float64) * self.voxel_size
+            self._subq_coords_cache[cache_key] = physical_coords
+            logger.info(
+                f"  Cached {len(physical_coords)} skin surface coords "
+                f"for regions={regions}, torso_only={torso_only}"
+            )
+
+        return self._subq_coords_cache[cache_key]
+
     def get_torso_slice(
         self, axis: str = "z", position: float = 0.5
     ) -> Tuple[np.ndarray, int]:

@@ -17,7 +17,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from scipy.spatial import cKDTree
+
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +216,8 @@ class TumorGenerator:
         gt_offset_mm=None,  # gt_voxels offset in trunk-local mm
         gt_shape=None,  # gt_voxels shape (Nx, Ny, Nz)
         gt_spacing_mm=None,  # voxel spacing of gt_voxels grid
+        merged_voxel_volume=None,  # trunk-cropped merged atlas volume [X,Y,Z] at voxel_size_mm
+        voxel_size_mm: float = 0.2,
     ):
         """Initialize tumor generator.
 
@@ -248,7 +250,7 @@ class TumorGenerator:
             If True, skip organ boundary constraint check (use for verification
             datasets where the constraint is too restrictive for the mesh).
         trunk_offset_mm : array-like, optional
-            [FIX v3] Offset from atlas-corner to trunk-local world frame [0,30,0].
+            Offset from atlas-corner to trunk-local world frame [0,34,0].
             Used to convert foci.center from atlas mm to trunk-local mm.
         mcx_bbox_mm : tuple, optional
             (min_xyz, max_xyz) tuple of MCX volume bbox in trunk-local mm.
@@ -262,6 +264,11 @@ class TumorGenerator:
         gt_spacing_mm : float, optional
             Voxel spacing of gt_voxels grid. Used for organ constraint
             (defaults to 0.2 if not provided).
+        merged_voxel_volume : np.ndarray, optional
+            Trunk-cropped merged atlas volume [X, Y, Z] at voxel_size_mm resolution.
+            Used for voxel-based organ constraint validation (replaces KD-Tree).
+        voxel_size_mm : float, default 0.2
+            Voxel size of merged_voxel_volume in mm.
         """
         self.config = config
         self.atlas = atlas
@@ -274,15 +281,15 @@ class TumorGenerator:
             np.asarray(trunk_offset_mm, dtype=np.float64)
             if trunk_offset_mm is not None else np.zeros(3)
         )
-        self.mcx_bbox_mm = mcx_bbox_mm  # 用来拒绝落在 MCX volume 外的 tumor
-
-        # gt_voxels bounding box in trunk-local mm (for strict organ constraint)
+        self.mcx_bbox_mm = mcx_bbox_mm
         self.gt_offset_mm = (
             np.asarray(gt_offset_mm, dtype=np.float64)
             if gt_offset_mm is not None else None
         )
-        self.gt_shape = gt_shape  # tuple (Nx, Ny, Nz) or None
+        self.gt_shape = gt_shape
         self.gt_spacing_mm = gt_spacing_mm if gt_spacing_mm is not None else 0.2
+        self.merged_voxel_volume = merged_voxel_volume
+        self.voxel_size_mm = voxel_size_mm
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -300,17 +307,6 @@ class TumorGenerator:
         self.min_foci_distance_abs = config.get("min_foci_distance_abs", 3.0)
 
         self._rng = np.random.default_rng()
-
-        # ── Precompute element centroids + KD-Tree (once) ──
-        self._centroid_tree: Optional[cKDTree] = None
-        self._centroid_tissue_labels: Optional[np.ndarray] = None
-        if elements is not None and mesh_nodes is not None:
-            centroids = mesh_nodes[elements].mean(axis=1)  # [N_elem, 3]
-            self._centroid_tree = cKDTree(centroids)
-            self._centroid_tissue_labels = tissue_labels
-            logger.info(
-                f"  Built element centroid KD-Tree: {len(centroids)} elements"
-            )
 
         # ── Precompute sampling coordinates for all depth tiers ──
         self._precompute_sampling_coords()
@@ -471,11 +467,9 @@ class TumorGenerator:
             focus.center_atlas_mm = np.asarray(focus.center, dtype=np.float64).copy()
             focus.center = (focus.center_atlas_mm - self.trunk_offset_mm).tolist()
 
-        # 拒绝落在 MCX volume 外（加 1mm margin）
-        if self.mcx_bbox_mm is not None:
+        # Reject tumors outside MCX volume (only when organ_constraint is enabled)
+        if not self._organ_constraint_disabled and self.mcx_bbox_mm is not None:
             lo, hi = self.mcx_bbox_mm
-
-            # gt_voxels 也必须覆盖整个 Gaussian support，否则下游 GT 查表全零
             if self.gt_offset_mm is not None and self.gt_shape is not None:
                 gt_hi = self.gt_offset_mm + self.gt_spacing_mm * np.array(self.gt_shape)
                 strict_lo = np.maximum(lo, self.gt_offset_mm)
@@ -483,11 +477,9 @@ class TumorGenerator:
             else:
                 strict_lo = lo
                 strict_hi = hi
-
             for focus in sample.foci:
                 c = np.asarray(focus.center)
                 r = focus.params.get("radius", 1.0)
-                # 整个 Gaussian support（到 4*sigma ≈ 4*r）都要在支撑内
                 if np.any(c - r < strict_lo) or np.any(c + r > strict_hi):
                     sample._organ_constraint_passed = False
                     break
@@ -522,37 +514,75 @@ class TumorGenerator:
         """
         if self._organ_constraint_disabled:
             return True  # Constraint disabled via config
-        if self._centroid_tree is None:
-            return True  # No KD-Tree available, skip validation
+        if self.merged_voxel_volume is None:
+            return True  # No voxel volume available, skip validation
 
-        # Check radius based on source type:
-        # - Uniform: tumor is a hard sphere, check just beyond boundary (+0.5mm discretization tolerance)
-        # - Gaussian: sigma=radius, intensity drops to 0.32 at 1.5*sigma, so check 1.5*radius+0.5mm
-        source_type = self.config.get("source_type", "gaussian")
-        if source_type == "uniform":
-            cutoff = radius + 0.5
-        elif source_type == "gaussian":
-            cutoff = 1.5 * radius + 0.5
-        else:
-            cutoff = 4.0 * radius  # fallback (shouldn't reach here)
+        # Query sphere of radius=r in trunk-local coords
+        vol = self.merged_voxel_volume
+        vs = self.voxel_size_mm
+        vol_shape = vol.shape  # [X, Y, Z]
 
-        # KD-Tree ball query: O(log N + k) instead of O(N)
-        indices = self._centroid_tree.query_ball_point(center, cutoff)
+        # Convert trunk-local center to voxel indices
+        cx, cy, cz = center[0] / vs, center[1] / vs, center[2] / vs
+        r_vox = radius / vs
 
-        if not indices:
+        # Bounding box of sphere in voxel space
+        x_min = max(0, int(cx - r_vox) - 1)
+        x_max = min(vol_shape[0], int(cx + r_vox) + 2)
+        y_min = max(0, int(cy - r_vox) - 1)
+        y_max = min(vol_shape[1], int(cy + r_vox) + 2)
+        z_min = max(0, int(cz - r_vox) - 1)
+        z_max = min(vol_shape[2], int(cz + r_vox) + 2)
+
+        # Extract subvolume and compute distance mask
+        subvol = vol[x_min:x_max, y_min:y_max, z_min:z_max].copy()
+        sx, sy, sz = np.meshgrid(
+            np.arange(subvol.shape[0]),
+            np.arange(subvol.shape[1]),
+            np.arange(subvol.shape[2]),
+            indexing='ij',
+        )
+        # Distances from sphere center (in voxels)
+        dist = np.sqrt(
+            (sx - (cx - x_min)) ** 2
+            + (sy - (cy - y_min)) ** 2
+            + (sz - (cz - z_min)) ** 2
+        )
+        mask = dist <= r_vox
+        labels_in_sphere = subvol[mask]
+
+        if labels_in_sphere.size == 0:
             return True
 
-        tissues = self._centroid_tissue_labels[np.array(indices)]
-        unique_tissues = set(np.unique(tissues))
+        # Volume fraction rule
+        unique, counts = np.unique(labels_in_sphere, return_counts=True)
+        fractions = counts / len(labels_in_sphere)
 
-        # Soft tissue labels that can be crossed freely
-        soft_tissue_labels = {1, 11, 12, 14}  # skin, muscle, fat, tongue
+        # Soft tissue labels: {1} = skin (includes subcutaneous in this atlas)
+        soft_labels = {1}
+        organ_mask = ~np.isin(unique, list(soft_labels) + [0])
+        organ_unique = unique[organ_mask]
+        organ_counts = counts[organ_mask]
 
-        # Remove background and soft tissue, get organ labels
-        organ_labels = unique_tissues - soft_tissue_labels - {0}
+        if len(organ_unique) == 0:
+            return True  # Pure soft tissue
 
-        # Allow at most 1 organ type
-        return len(organ_labels) <= 1
+        dominant_idx = np.argmax(organ_counts)
+        dominant_label = organ_unique[dominant_idx]
+        dominant_fraction = organ_counts[dominant_idx] / len(labels_in_sphere)
+
+        # Dominant organ must be ≥ 80%
+        if dominant_fraction < 0.80:
+            return False
+
+        # Other organs total ≤ 10%
+        other_fraction = 1.0 - dominant_fraction - (
+            counts[np.isin(unique, list(soft_labels) + [0])].sum() / len(labels_in_sphere)
+        )
+        if other_fraction > 0.10:
+            return False
+
+        return True
 
     def _sample_cluster_position(
         self, anchor: Optional[AnalyticFocus], cluster_radius: float
@@ -641,14 +671,16 @@ class TumorGenerator:
     def _sample_from_atlas_with_flag(
         self, forced_depth: Optional[float] = None
     ) -> Tuple[np.ndarray, bool]:
-        """Attempt to sample from atlas subcutaneous region.
+        """Attempt to sample from atlas skin surface region.
 
-        Uses pre-cached subcutaneous coordinates for O(1) random sampling.
+        Uses pre-cached skin surface coordinates for O(1) random sampling.
+        This is the correct placement for subcutaneous xenograft tumors when
+        there is no distinct subcutaneous fat/muscle layer in the atlas.
 
         Parameters
         ----------
         forced_depth : float, optional
-            If provided, force the depth in mm from body surface.
+            Ignored for skin surface sampling (depth is fixed at body surface).
 
         Returns
         -------
@@ -658,23 +690,19 @@ class TumorGenerator:
         """
         region = self._rng.choice(self.regions)
 
-        # Use forced depth or fall back to config range
-        depth_range = (
-            (forced_depth, forced_depth) if forced_depth is not None
-            else tuple(self.depth_range)
-        )
-
-        # Use cached coordinates (no EDT recomputation)
-        coords = self.atlas.get_subcutaneous_coords(
-            depth_range_mm=depth_range,
+        # Use skin surface coordinates (no depth filtering needed since
+        # skin IS the body surface — no subcutaneous layer in this atlas)
+        coords = self.atlas.get_skin_surface_coords(
             regions=[region],
+            torso_only=True,
         )
 
         if len(coords) == 0:
             return self._sample_from_config(forced_depth=forced_depth), False
 
         idx = self._rng.integers(len(coords))
-        return coords[idx].copy(), True
+        pos = coords[idx].copy()
+        return pos, True
 
     def _sample_from_config(
         self, forced_depth: Optional[float] = None

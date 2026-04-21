@@ -183,8 +183,8 @@ mcx:
   # 躯干裁剪参数（Y 方向，对应 anterior→posterior）
   # Y ∈ [30mm, 70mm] at 0.1mm/voxel → voxel index [300, 700]
   trunk_crop:
-    y_start: 300
-    y_end: 700
+    y_start: 340
+    y_end: 740
 
   # 下采样因子
   downsample_factor: 2
@@ -193,8 +193,8 @@ mcx:
   voxel_size_mm: 0.2
 
   # 裁剪后体积起点在原始 atlas 中的物理偏移（mm）
-  # Y offset: atlas body center Y = 34mm (measured from atlas crop, not y_start*0.1)
-  trunk_offset_mm: [0, 34, 0]  # CORRECTED: was 30, actual atlas body center Y offset = 34mm
+  # Y offset: trunk crop y_start=340 voxel → 34mm atlas (y_end=740→74mm)
+  trunk_offset_mm: [0, 34, 0]
 
   # MCX Dim（Z, Y, X 顺序）- 由脚本自动计算
   # 原始裁剪后 (X=380, Y=400, Z=208) → 2× 下采样后 (X=190, Y=200, Z=104)

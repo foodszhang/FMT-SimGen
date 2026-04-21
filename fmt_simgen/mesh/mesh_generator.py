@@ -170,11 +170,11 @@ class MeshGenerator:
     # Trunk cropping
     # -------------------------------------------------------------------------
     # Trunk bounding box in atlas physical coordinates (mm).
-    # MUST match mcx.trunk_crop y_start=300, y_end=700 (voxel at 0.1mm)
-    # = Y ∈ [30, 70] mm atlas = the same torso region as the MCX volume crop.
+    # MUST match mcx_volume.py crop: y_start=340, y_end=740 (voxel at 0.1mm)
+    # = Y ∈ [34, 74] mm atlas = the same torso region as the MCX volume crop.
     TRUNK_BBOX_ATLAS = {
         "x": (-1.0, 39.0),    # trunk X extent: 0..38mm
-        "y": (30.0, 70.0),    # trunk Y extent: 30..70mm atlas (matches MCX crop)
+        "y": (34.0, 74.0),    # trunk Y extent: 34..74mm atlas (matches MCX crop y_start=340,y_end=740)
         "z": (-1.0, 21.8),    # trunk Z extent: 0..20.8mm
     }
 

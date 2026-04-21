@@ -98,6 +98,7 @@ class FEMSolver:
         self._matrices: Optional[FEMMatrices] = None
         self._forward_matrix: Optional[np.ndarray] = None
         self._surface_index: Optional[np.ndarray] = None
+        self._lu: Optional["scipy.sparse.linalg.SuperLU"] = None  # cached LU of M
 
     def map_labels_to_merged(self) -> np.ndarray:
         """Map original Digimouse labels to merged labels.
@@ -474,6 +475,9 @@ class FEMSolver:
     def forward(self, d_gt_nodes: np.ndarray) -> np.ndarray:
         """Compute forward measurement: b = A @ d_gt.
 
+        Uses sparse matvec + 1 LU solve (not dense A matrix).
+        LU factorization is cached after first call.
+
         Parameters
         ----------
         d_gt_nodes : np.ndarray
@@ -484,13 +488,21 @@ class FEMSolver:
         np.ndarray
             Forward measurement at surface nodes [S].
         """
-        if self._forward_matrix is None:
-            self.compute_forward_matrix()
+        if self._matrices is None:
+            self.assemble_system_matrix()
 
-        b = self._forward_matrix @ d_gt_nodes
-        b = np.maximum(b, 0.0)
+        if self._lu is None:
+            import time
+            t0 = time.time()
+            self._lu = splu(self._matrices.M.tocsc())
+            logger.info(
+                f"LU factored once: {time.time()-t0:.1f}s, "
+                f"nnz_L+U={self._lu.L.nnz + self._lu.U.nnz:,}"
+            )
 
-        return b
+        f = self._matrices.F @ d_gt_nodes          # sparse matvec, ms
+        x = self._lu.solve(f)                       # 1 solve
+        return np.maximum(x[self._surface_index], 0.0)
 
     def validate(self, A: Optional[np.ndarray] = None) -> Dict:
         """Validate forward matrix by placing a point source.

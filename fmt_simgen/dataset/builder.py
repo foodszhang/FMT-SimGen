@@ -453,7 +453,7 @@ class DatasetBuilder:
         mcx_cfg = self.config.get("mcx", {})
         if not mcx_cfg:
             raise ValueError("[FIX v3] config.mcx 必填 — frame 对齐依赖它")
-        trunk_offset_atlas = np.array(mcx_cfg["trunk_offset_mm"], dtype=np.float64)  # [0,30,0]
+        trunk_offset_atlas = np.array(mcx_cfg["trunk_offset_mm"], dtype=np.float64)  # [0,34,0]
         trunk_voxel_size = float(mcx_cfg["voxel_size_mm"])  # 0.2
         # volume_shape 是 ZYX 顺序
         vs_zyx = mcx_cfg["volume_shape"]
@@ -496,7 +496,18 @@ class DatasetBuilder:
             f"trunk_offset_mm 可能不匹配（正常 full-body mesh 约 57-60%）"
         )
 
-        # 3) ROI：以 MCX volume 几何中心为中心的 roi_size^3 立方
+        # 3) Load merged voxel volume for organ constraint (same as MCX trunk volume)
+        merged_vol_path = Path("output/shared/mcx_volume_trunk.bin")
+        if merged_vol_path.exists():
+            merged_vol_raw = np.fromfile(merged_vol_path, dtype=np.uint8)
+            # volume_shape is ZYX from config, transpose to XYZ for [X,Y,Z] indexing
+            merged_vol_xyz = merged_vol_raw.reshape(vs_zyx[::-1]).transpose(2, 1, 0)
+            print(f"  Loaded merged voxel volume: {merged_vol_xyz.shape}, dtype={merged_vol_xyz.dtype}")
+        else:
+            merged_vol_xyz = None
+            print("  [WARNING] mcx_volume_trunk.bin not found — organ constraint will use fallback")
+
+        # 4) ROI：以 MCX volume 几何中心为中心的 roi_size^3 立方
         roi_center = trunk_size_mm / 2.0  # ≈ [19, 20, 10.4]
         roi_half = roi_size / 2.0
         node_min = roi_center - roi_half  # trunk-local mm
@@ -509,12 +520,12 @@ class DatasetBuilder:
             offset=node_min,  # ← trunk-local frame
         )
 
-        # 4) mesh_bbox 也用 rebased nodes（tumor placement 不受影响，因为 tumor_generator 内部另有 atlas-frame 逻辑，见 1.2）
+        # 5) mesh_bbox 也用 rebased nodes（tumor placement 不受影响，因为 tumor_generator 内部另有 atlas-frame 逻辑，见 1.2）
         mesh_min = nodes_trunk.min(axis=0)
         mesh_max = nodes_trunk.max(axis=0)
         mesh_bbox = {"min": mesh_min.tolist(), "max": mesh_max.tolist()}
 
-        # 5) TumorGenerator：传入 trunk_offset 让它把 center 转成 trunk-local
+        # 6) TumorGenerator
         self.tumor_generator = TumorGenerator(
             config=self.tumor_config,
             atlas=self.atlas,
@@ -529,7 +540,9 @@ class DatasetBuilder:
             mcx_bbox_mm=(np.zeros(3), trunk_size_mm),
             gt_offset_mm=voxel_grid_config.offset,  # gt_voxels bounding box
             gt_shape=voxel_grid_config.shape,  # gt_voxels shape
-            gt_spacing_mm=voxel_spacing,  # gt_voxels spacing (used in organ constraint)
+            gt_spacing_mm=voxel_spacing,  # gt_voxels spacing
+            merged_voxel_volume=merged_vol_xyz,  # trunk-cropped merged atlas [X,Y,Z]
+            voxel_size_mm=trunk_voxel_size,  # 0.2mm, same as MCX
         )
 
         dual_sampler = DualSampler(
