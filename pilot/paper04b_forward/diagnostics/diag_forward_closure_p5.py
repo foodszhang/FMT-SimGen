@@ -1,4 +1,4 @@
-"""Forward Closure Round 1 — P5-ventral residual attribution."""
+"""Forward Closure Round 1b — P5-ventral residual attribution with corrected labels."""
 
 import csv
 import json
@@ -23,10 +23,23 @@ VOLUME_PATH = Path(
 )
 ARCHIVE_BASE = Path("pilot/_archive/e1b_stage2_v2_y24_frozen/stage2_multiposition_v2")
 
-SOFT_TISSUE_LABEL = 1
+LABEL_MAPPING = {
+    0: "background",
+    1: "skin",
+    2: "skeleton",
+    3: "brain",
+    4: "medulla",
+    5: "cerebellum",
+    6: "olfactory_bulb",
+    7: "external_brain",
+    8: "striatum",
+    9: "heart",
+}
+
 AIR_LABEL = 0
-LIVER_LABEL = 6
-BONE_LABEL = 7
+SOFT_TISSUE_LABEL = 1
+BONE_LABEL = 2
+ORGAN_LABELS = {3, 4, 5, 6, 7, 8, 9}
 
 GT_POS = np.array([-0.6, 2.4, -3.8])
 EPS = 1e-20
@@ -111,12 +124,13 @@ def get_path_info(source_pos_mm, vertex_pos_mm, volume_labels, voxel_size_mm):
     organ_labels = labels_encountered - {AIR_LABEL, SOFT_TISSUE_LABEL}
     if len(organ_labels) == 0:
         path_class = "soft-only"
-    elif LIVER_LABEL in organ_labels:
-        path_class = "through-liver"
     elif BONE_LABEL in organ_labels:
         path_class = "through-bone"
+    elif len(organ_labels & ORGAN_LABELS) > 0:
+        first_organ_label = min(organ_labels & ORGAN_LABELS)
+        path_class = f"through-{LABEL_MAPPING[first_organ_label]}"
     else:
-        path_class = "through-other-organs"
+        path_class = "through-other"
 
     return path_class, path_lengths, first_organ
 
@@ -184,9 +198,8 @@ def save_residual_csv(data, output_path):
         "angle_cos",
         "path_class",
         "soft_len",
-        "liver_len",
         "bone_len",
-        "other_len",
+        "organ_len",
     ]
     with open(output_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -203,7 +216,7 @@ def plot_histogram(residual, title, output_path):
     plt.title(title)
     plt.axvline(0, color="red", linestyle="--", linewidth=1)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
 
@@ -215,7 +228,7 @@ def plot_residual_vs_distance(residual, distance, title, output_path):
     plt.title(title)
     plt.axhline(0, color="red", linestyle="--", linewidth=1)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
 
@@ -227,22 +240,22 @@ def plot_residual_vs_angle(residual, angle_cos, title, output_path):
     plt.title(title)
     plt.axhline(0, color="red", linestyle="--", linewidth=1)
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
 
 def plot_residual_by_pathclass(residuals_by_class, output_path):
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
     labels = list(residuals_by_class.keys())
     data = [residuals_by_class[k] for k in labels]
-    plt.boxplot(data, labels=labels)
+    plt.boxplot(data, tick_labels=labels)
     plt.ylabel("Residual")
     plt.xlabel("Path class")
     plt.title("Residual by path class")
     plt.axhline(0, color="red", linestyle="--", linewidth=1)
-    plt.xticks(rotation=15)
+    plt.xticks(rotation=30, ha="right")
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path, dpi=300)
     plt.close()
 
 
@@ -369,6 +382,11 @@ def main():
             "direct_path_function": "is_direct_path_vertex (ray-march, step=0.1mm)",
             "green_function": "G_inf (semi-infinite Green's function)",
             "scale_formula": "scale_factor_logmse (geomean)",
+            "label_mapping": LABEL_MAPPING,
+            "air_label": AIR_LABEL,
+            "soft_tissue_label": SOFT_TISSUE_LABEL,
+            "bone_label": BONE_LABEL,
+            "organ_labels": list(ORGAN_LABELS),
         },
         "mask_counts": {
             "mask_direct": int(np.sum(mask_direct)),
@@ -413,6 +431,7 @@ def main():
         indices = np.where(mask)[0]
         for j, idx in enumerate(indices):
             pl = pl_masked[j]
+            organ_len = sum(v for k, v in pl.items() if k in ORGAN_LABELS)
             csv_data.append(
                 {
                     "vertex_idx": int(idx),
@@ -429,21 +448,8 @@ def main():
                     "soft_len": float(
                         pl.get(SOFT_TISSUE_LABEL, 0) + pl.get(AIR_LABEL, 0)
                     ),
-                    "liver_len": float(pl.get(LIVER_LABEL, 0)),
                     "bone_len": float(pl.get(BONE_LABEL, 0)),
-                    "other_len": float(
-                        sum(
-                            v
-                            for k, v in pl.items()
-                            if k
-                            not in {
-                                AIR_LABEL,
-                                SOFT_TISSUE_LABEL,
-                                LIVER_LABEL,
-                                BONE_LABEL,
-                            }
-                        )
-                    ),
+                    "organ_len": float(organ_len),
                 }
             )
         save_residual_csv(csv_data, output_dir / f"residual_table_{mask_name}.csv")

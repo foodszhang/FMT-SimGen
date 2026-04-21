@@ -343,20 +343,23 @@ class TumorGenerator:
     # ── U7-Fast: new sampling and validation methods ──────────────────────────────────
 
     def _compute_edt_depth(self, vol: np.ndarray, voxel_size_mm: float) -> None:
-        """Precompute EDT depth map: min distance from each voxel to solid-tissue surface.
+        """Precompute EDT depth map: min distance from each voxel to body surface.
 
-        Uses solid-tissue mask (excludes air=0 and hollow organs lungs=9, stomach=5
-        whose interior is label=0 in the merged volume). EDT gives distance from
-        each voxel to the nearest solid-tissue boundary, which correctly measures
-        subcutaneous depth even inside hollow organs.
+        Body surface = voxels with label != 0. EDT gives distance in voxels;
+        multiply by voxel_size_mm to get mm.
         """
         from scipy.ndimage import distance_transform_edt
-        # Solid mask: everything except air (0) and hollow organ interiors (5, 9)
-        solid_mask = ~np.isin(vol, [0, 5, 9])
-        dist = distance_transform_edt(solid_mask, sampling=[voxel_size_mm] * 3)
+        body_mask = vol != 0
+        # EDT: distance from each voxel to nearest background (label==0)
+        # We want distance FROM body TO surface = distance to nearest non-body voxel
+        # But we want depth = distance from surface inward = for interior voxels,
+        # distance to the nearest surface voxel (label != 0 but near boundary)
+        # Simplified: use distance to nearest ZERO voxel as proxy for depth
+        # (0 = outside body, non-zero = inside body)
+        dist = distance_transform_edt(vol == 0, sampling=[voxel_size_mm] * 3)
         self._edt_depth_mm = dist
-        logger.info(f"  EDT depth map computed (solid-tissue): "
-                    f"shape={dist.shape}, max_depth={dist.max():.1f}mm")
+        logger.info(f"  EDT depth map computed: shape={dist.shape}, "
+                    f"max_depth={dist.max():.1f}mm")
 
     def _sample_random_position(
         self, radius: float, region: str = "dorsal"
