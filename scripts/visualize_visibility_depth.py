@@ -79,7 +79,7 @@ for ax_idx, (elev, azim) in enumerate(view_angles):
         xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
         ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
         zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
-        ax.plot(xs, ys, zs, color='lightgray', lw=0.3, alpha=0.6)
+        ax.plot(xs, ys, zs, color='lightgray', lw=0.15, alpha=0.25)
 
     # --- Signal triangles: colored wireframe + fill ---
     sig_faces = surf_faces[tri_has_signal]
@@ -92,7 +92,7 @@ for ax_idx, (elev, azim) in enumerate(view_angles):
         xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
         ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
         zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
-        ax.plot(xs, ys, zs, color=c, lw=0.5, alpha=0.9)
+        ax.plot(xs, ys, zs, color=c, lw=0.3, alpha=0.7)
 
     # Mark foci
     for fc in focus_centers:
