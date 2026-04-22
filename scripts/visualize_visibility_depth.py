@@ -73,26 +73,35 @@ norm = plt.Normalize(0, meas_b.max())
 for ax_idx, (elev, azim) in enumerate(view_angles):
     ax = fig.add_subplot(2, 2, ax_idx + 1, projection='3d')
 
-    # --- No-signal triangles: gray wireframe ---
+    # --- No-signal triangles: gray wireframe (very faint) ---
     no_sig_faces = surf_faces[~tri_has_signal]
     for fi, fs, ft in no_sig_faces:
         xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
         ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
         zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
-        ax.plot(xs, ys, zs, color='lightgray', lw=0.15, alpha=0.25)
+        ax.plot(xs, ys, zs, color='lightgray', lw=0.1, alpha=0.12)
 
-    # --- Signal triangles: colored wireframe + fill ---
+    # --- Signal triangles: filled polygons via Poly3DCollection ---
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     sig_faces = surf_faces[tri_has_signal]
     sig_vals = tri_vals[tri_has_signal]
+    triangles = []
+    colors = []
     for i, (fi, fs, ft) in enumerate(sig_faces):
         v = sig_vals[i]
         if v <= 0:
             continue
         c = cmap(min(v / meas_b.max(), 1.0))
-        xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
-        ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
-        zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
-        ax.plot(xs, ys, zs, color=c, lw=0.3, alpha=0.7)
+        triangles.append([
+            [surf_nodes[fi, 0], surf_nodes[fi, 1], surf_nodes[fi, 2]],
+            [surf_nodes[fs, 0], surf_nodes[fs, 1], surf_nodes[fs, 2]],
+            [surf_nodes[ft, 0], surf_nodes[ft, 1], surf_nodes[ft, 2]],
+        ])
+        colors.append(c)
+
+    if triangles:
+        poly_coll = Poly3DCollection(triangles, facecolors=colors, alpha=0.85, edgecolors='none')
+        ax.add_collection3d(poly_coll)
 
     # Mark foci
     for fc in focus_centers:
