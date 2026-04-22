@@ -1,40 +1,45 @@
 #!/usr/bin/env python3
 """
-run_all.py — Dual-channel (DE + MCX) pipeline entry point for FMT-SimGen.
+run_all.py — Unified pipeline entry point for FMT-SimGen.
 
 Generates N dataset samples with DE channel (forward measurement) and optionally
 MCX channel (3D fluence simulation + multi-angle projections).
 
 Usage:
-    # DE + MCX dual channel (50 samples, default)
-    python scripts/run_all.py --num_samples 50
+    # Full pipeline: DE + MCX (default)
+    python scripts/run_all.py --config config/default.yaml -n 50
 
-    # DE channel only (no MCX)
-    python scripts/run_all.py --num_samples 50 --disable_mcx
+    # DE channel only
+    python scripts/run_all.py --config config/default.yaml -n 50 --phase de
 
     # MCX channel only (on existing DE samples)
-    python scripts/run_mcx_pipeline.py --samples_dir output/samples
+    python scripts/run_all.py --config config/default.yaml --phase mcx
+
+    # MCX projection only (skip simulation)
+    python scripts/run_all.py --config config/default.yaml --phase mcx --mcx_projection_only
+
+    # Post-processing: validate manifest and sample completeness
+    python scripts/run_all.py --config config/default.yaml --phase post
 
 Exit codes:
     0  -- all phases succeeded
-    1  -- DE or MCX phase failed
+    1  -- one or more phases failed
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
-import subprocess
 import sys
 import time
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fmt_simgen.dataset.builder import DatasetBuilder
-
+from fmt_simgen.pipeline.de_pipeline import run_de_pipeline
+from fmt_simgen.pipeline.mcx_pipeline import run_mcx_pipeline
+from fmt_simgen.pipeline.shared import derive_samples_dir, load_config_with_inheritance
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,92 +48,66 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def deep_merge(base: dict, override: dict) -> None:
-    """Recursively merge override into base (in-place)."""
-    for k, v in override.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            deep_merge(base[k], v)
-        else:
-            base[k] = v
+def run_post_phase(config: dict) -> bool:
+    """Run post-processing: dataset manifest validation.
 
+    Parameters
+    ----------
+    config : dict
+        Full configuration dictionary.
 
-def load_config_with_inheritance(config_path: str) -> dict:
-    """Load configuration file with _base_ inheritance support."""
-    config_path = Path(config_path)
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-
-    base_name = cfg.pop("_base_", None)
-    if base_name:
-        base_path = config_path.parent / base_name
-        base_cfg = load_config_with_inheritance(str(base_path))
-        deep_merge(base_cfg, cfg)
-        return base_cfg
-    return cfg
-
-
-def run_de_pipeline(num_samples: int | None, config_path: str) -> bool:
-    """Run the DE channel (Steps 1-4 via DatasetBuilder).
-
-    Returns True if successful.
+    Returns
+    -------
+    bool
+        True if validation passes, False otherwise.
     """
+    dataset_cfg = config.get("dataset", {})
+    experiment_name = dataset_cfg.get("experiment_name", "default")
+    experiment_output = (
+        Path(dataset_cfg.get("output_path", "data/")) / experiment_name
+    )
+    manifest_path = experiment_output / "dataset_manifest.json"
+    samples_dir = experiment_output / "samples"
+
     logger.info("=" * 60)
-    logger.info("Phase DE: Generating %s samples with forward measurements",
-                "N" if num_samples is None else num_samples)
+    logger.info("Phase POST: Validating dataset manifest and sample completeness")
     logger.info("=" * 60)
 
-    config = load_config_with_inheritance(config_path)
-    experiment_name = config.get("dataset", {}).get("experiment_name", "default")
-
-    builder = DatasetBuilder(config)
-
-    try:
-        builder.build_samples(num_samples=num_samples)
-    except Exception as e:
-        logger.error("DE phase failed: %s", e)
+    if not manifest_path.exists():
+        logger.error("dataset_manifest.json not found at %s", manifest_path)
         return False
 
-    logger.info("DE phase complete: samples in data/%s/", experiment_name)
-    return True
+    # Validate required files exist for all samples
+    incomplete = []
+    for sd in sorted(samples_dir.glob("sample_*")):
+        if not sd.is_dir():
+            continue
+        for fname in [
+            "measurement_b.npy",
+            "gt_nodes.npy",
+            "gt_voxels.npy",
+            "tumor_params.json",
+        ]:
+            if not (sd / fname).exists():
+                incomplete.append(f"{sd.name}/{fname}")
 
-
-def run_mcx_pipeline(samples_dir: Path, projection_only: bool = False,
-                       max_workers: int = 1, no_skip: bool = False) -> bool:
-    """Run the MCX channel via run_mcx_pipeline.py subprocess.
-
-    Returns True if script exits with code 0.
-    """
-    logger.info("=" * 60)
-    logger.info("Phase MCX: Running MCX pipeline on data/%s/", samples_dir.name)
-    logger.info("=" * 60)
-
-    cmd = [
-        sys.executable,  # use current interpreter (uv run)
-        str(Path(__file__).parent / "run_mcx_pipeline.py"),
-        "--samples_dir", str(samples_dir),
-    ]
-    if projection_only:
-        cmd.append("--projection_only")
-    if no_skip:
-        cmd.append("--no_skip")
-    if max_workers > 1:
-        cmd.extend(["--max_workers", str(max_workers)])
-
-    try:
-        result = subprocess.run(
-            cmd,
-            check=False,  # don't raise on non-zero exit
-            text=True,
+    if incomplete:
+        logger.error(
+            "Incomplete samples found (%d files missing):", len(incomplete)
         )
-        return result.returncode == 0
-    except Exception as e:
-        logger.error("MCX pipeline subprocess failed: %s", e)
+        for m in incomplete[:10]:
+            logger.error("  %s", m)
+        if len(incomplete) > 10:
+            logger.error("  ... and %d more", len(incomplete) - 10)
         return False
+
+    logger.info("Post phase: dataset validation passed for %s", experiment_name)
+    return True
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="run_all.py: DE + MCX dual-channel pipeline for FMT-SimGen"
+        description="run_all.py: Unified pipeline entry point for FMT-SimGen"
     )
     parser.add_argument(
         "--config",
@@ -145,25 +124,32 @@ def main() -> None:
         help="Number of samples to generate (uses config default if not specified)",
     )
     parser.add_argument(
-        "--disable_mcx",
-        action="store_true",
-        help="Skip MCX channel (DE only)",
+        "--phase",
+        type=str,
+        choices=["de", "mcx", "post", "all"],
+        default="all",
+        help="Pipeline phase to run: "
+        "'de' (DE generation only), "
+        "'mcx' (MCX pipeline on existing DE samples), "
+        "'post' (manifest validation), "
+        "'all' (de+mcx, default)",
     )
+    # MCX-phase flags
     parser.add_argument(
         "--mcx_projection_only",
         action="store_true",
-        help="Skip MCX simulation; only generate projections (for re-running on existing .jnii)",
+        help="[MCX phase] Skip MCX simulation; only generate projections",
     )
     parser.add_argument(
         "--mcx_max_workers",
         type=int,
         default=1,
-        help="Number of parallel workers for MCX projection (default: 1)",
+        help="[MCX phase] Number of parallel projection workers (default: 1)",
     )
     parser.add_argument(
         "--mcx_no_skip",
         action="store_true",
-        help="Re-generate proj.npz even if they already exist",
+        help="[MCX phase] Re-generate proj.npz even if they already exist",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging",
@@ -173,38 +159,97 @@ def main() -> None:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    config_path = Path(__file__).parent.parent / args.config
+    project_root = Path(__file__).parent.parent
+    config_path = project_root / args.config
+
+    # Load config once — used by all phases
     config = load_config_with_inheritance(str(config_path))
+
+    # Merge view_config.json only when config has no view_config section.
+    # This mirrors the priority in mcx_pipeline.py: YAML config wins,
+    # view_config.json is only a fallback for standalone CLI use.
+    if "view_config" not in config or not config["view_config"].get("angles"):
+        view_json_path = project_root / "output" / "shared" / "view_config.json"
+        if view_json_path.exists():
+            with open(view_json_path, "r") as f:
+                config["view_config"] = json.load(f)
+                logger.info("view_config: loaded from output/shared/view_config.json (fallback)")
+        else:
+            logger.warning(
+                "view_config not in config and view_config.json not found. "
+                "Camera-based filtering may be missing."
+            )
+
     experiment_name = config.get("dataset", {}).get("experiment_name", "default")
-    samples_base = Path(__file__).parent.parent / "data" / experiment_name / "samples"
+    samples_dir = derive_samples_dir(config)
+
+    logger.info("Experiment: %s", experiment_name)
+    logger.info("Samples dir: %s", samples_dir)
 
     t0 = time.time()
 
-    # Phase DE
-    de_ok = run_de_pipeline(args.num_samples, str(config_path))
-
-    # Phase MCX (enabled by default)
+    # ── Phase dispatch ────────────────────────────────────────────────────────
+    de_ok = True
     mcx_ok = True
-    if not args.disable_mcx and de_ok:
-        mcx_ok = run_mcx_pipeline(
-            samples_dir=samples_base,
-            projection_only=args.mcx_projection_only,
-            max_workers=args.mcx_max_workers,
-            no_skip=args.mcx_no_skip,
-        )
+    post_ok = True
+
+    if args.phase in ("de", "all"):
+        try:
+            run_de_pipeline(config, num_samples=args.num_samples)
+        except Exception as e:
+            logger.error("DE phase failed: %s", e)
+            de_ok = False
+
+    if args.phase in ("mcx", "all"):
+        if args.phase == "all" and not de_ok:
+            logger.warning("Skipping MCX phase because DE phase failed.")
+        else:
+            # Pre-check: samples must exist for MCX phase
+            if not samples_dir.exists():
+                logger.error(
+                    "Samples directory not found: %s", samples_dir
+                )
+                logger.error("Run --phase de first to generate DE samples.")
+                mcx_ok = False
+            else:
+                try:
+                    run_mcx_pipeline(
+                        config=config,
+                        samples_dir=samples_dir,
+                        projection_only=args.mcx_projection_only,
+                        max_workers=args.mcx_max_workers,
+                        no_skip=args.mcx_no_skip,
+                    )
+                except Exception as e:
+                    logger.error("MCX phase failed: %s", e)
+                    mcx_ok = False
+
+    if args.phase == "post":
+        post_ok = run_post_phase(config)
 
     elapsed = time.time() - t0
 
+    # ── Summary ───────────────────────────────────────────────────────────────
     logger.info("")
     logger.info("=" * 60)
     logger.info("Pipeline complete (%.1fs)", elapsed)
-    logger.info("  DE phase:  %s", "OK" if de_ok else "FAILED")
-    if not args.disable_mcx:
+    if args.phase in ("de", "all"):
+        logger.info("  DE phase:  %s", "OK" if de_ok else "FAILED")
+    if args.phase in ("mcx", "all"):
         logger.info("  MCX phase: %s", "OK" if mcx_ok else "FAILED")
+    if args.phase == "post":
+        logger.info("  POST phase: %s", "OK" if post_ok else "FAILED")
     logger.info("  Samples:   data/%s/samples/", experiment_name)
     logger.info("=" * 60)
 
-    if de_ok and (args.disable_mcx or mcx_ok):
+    # Exit code
+    phase_ok = de_ok
+    if args.phase in ("mcx", "all"):
+        phase_ok = phase_ok and mcx_ok
+    if args.phase == "post":
+        phase_ok = post_ok
+
+    if phase_ok:
         logger.info("All phases succeeded.")
         sys.exit(0)
     else:

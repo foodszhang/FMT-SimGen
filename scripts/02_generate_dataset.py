@@ -1,61 +1,29 @@
 #!/usr/bin/env python3
 """
-Step 1-4: Generate dataset samples.
+Step 1-4: Generate dataset samples (DE channel).
 
 This script generates N tumor samples with forward measurements.
-Run after 01_generate_mesh.py.
+Run after the asset generation steps (0b-0g).
 
 Usage:
-    python scripts/02_generate_dataset.py --config config/gaussian_1000.yaml
+    python scripts/02_generate_dataset.py --config config/gaussian_1000.yaml -n 50
+    python scripts/02_generate_dataset.py --config config/default.yaml --start_index 0 --end_index 20
 """
 
+from __future__ import annotations
+
+import argparse
 import sys
 from pathlib import Path
-import argparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import yaml
-from fmt_simgen.dataset.builder import DatasetBuilder
+from fmt_simgen.pipeline.de_pipeline import run_de_pipeline
+from fmt_simgen.pipeline.shared import derive_samples_dir, load_config_with_inheritance
 
 
-def deep_merge(base: dict, override: dict) -> None:
-    """Recursively merge override into base (in-place)."""
-    for k, v in override.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            deep_merge(base[k], v)
-        else:
-            base[k] = v
-
-
-def load_config_with_inheritance(config_path: str) -> dict:
-    """Load configuration file with _base_ inheritance support.
-
-    Parameters
-    ----------
-    config_path : str
-        Path to the config file.
-
-    Returns
-    -------
-    dict
-        Merged configuration dictionary.
-    """
-    config_path = Path(config_path)
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-
-    base_name = cfg.pop("_base_", None)
-    if base_name:
-        base_path = config_path.parent / base_name
-        base_cfg = load_config_with_inheritance(str(base_path))
-        deep_merge(base_cfg, cfg)
-        return base_cfg
-    return cfg
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Generate FMT dataset samples")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate FMT dataset samples (DE channel)")
     parser.add_argument(
         "--config",
         "-c",
@@ -90,9 +58,6 @@ def main():
     experiment_name = config.get("dataset", {}).get("experiment_name", "default")
     print(f"Experiment: {experiment_name}")
     print(f"Source type: {config.get('tumor', {}).get('source_type', 'gaussian')}")
-
-    builder = DatasetBuilder(config)
-
     print("=" * 60)
     print("Step 1-4: Generating dataset samples")
     print("=" * 60)
@@ -109,9 +74,12 @@ def main():
         target_num = config.get("dataset", {}).get("num_samples", 50)
         print(f"Generating {target_num} samples (from config)...")
 
-    builder.build_samples(num_samples=target_num, start_index=args.start_index)
+    run_de_pipeline(config, num_samples=target_num, start_index=args.start_index)
 
-    print(f"\nDataset generation complete! See data/{experiment_name}/ for output.")
+    print(
+        f"\nDataset generation complete! "
+        f"See data/{experiment_name}/ for output."
+    )
 
 
 if __name__ == "__main__":

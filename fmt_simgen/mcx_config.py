@@ -64,7 +64,7 @@ def generate_mcx_config(
     if nonzero_count == 0:
         raise ValueError(f"Sample {sample_id}: pattern has zero non-zero voxels")
 
-    # Transpose pattern from (nx, ny, nz) to (nz, ny, nx) for MCX binary
+    # Transpose from (nx, ny, nz) to (nz, ny, nx) for MCX binary
     pattern_zyx = pattern.transpose(2, 1, 0)
 
     # Save binary file
@@ -73,12 +73,16 @@ def generate_mcx_config(
     logger.debug(f"Saved source binary: {source_bin_path} (shape {pattern_zyx.shape})")
 
     # Load media list from material YAML
-    material_path = Path(mcx_config.get("material_path", "output/shared/mcx_material.yaml"))
+    material_path = Path(
+        mcx_config.get("material_path", "output/shared/mcx_material.yaml")
+    )
     if material_path.exists():
         with open(material_path, "r") as f:
             media_list = yaml.safe_load(f)
     else:
-        logger.warning(f"Material YAML not found: {material_path}, using empty Media list")
+        logger.warning(
+            f"Material YAML not found: {material_path}, using empty Media list"
+        )
         media_list = []
 
     # Build JSON config
@@ -90,7 +94,9 @@ def generate_mcx_config(
     # Compute the relative path from output_dir (sample directory) to the volume file
     # by going up from output_dir to the project root, then down to the volume.
     project_root = Path(__file__).parent.parent
-    volume_file_rel = mcx_config.get("volume_path", "output/shared/mcx_volume_trunk.bin")
+    volume_file_rel = mcx_config.get(
+        "volume_path", "output/shared/mcx_volume_trunk.bin"
+    )
     volume_file_abs = (project_root / volume_file_rel).resolve()
 
     # Compute relative path from sample output_dir to project_root
@@ -115,7 +121,9 @@ def generate_mcx_config(
     config_dict = {
         "Domain": {
             "VolumeFile": str(volume_file),
-            "Dim": list(mcx_config["volume_shape"]),  # [Z, Y, X] = TRUNK_GRID_SHAPE[::-1]
+            "Dim": list(
+                mcx_config["volume_shape"]
+            ),  # [Z, Y, X] = TRUNK_GRID_SHAPE[::-1]
             "OriginType": 1,
             "LengthUnit": float(mcx_config["voxel_size_mm"]),
             "Media": media_list,
@@ -132,7 +140,6 @@ def generate_mcx_config(
         },
         "Optode": {
             "Source": {
-                # Pos in XYZ order (confirmed from batch_config_generator.py line 199)
                 "Pos": [int(x0), int(y0), int(z0)],
                 "Dir": [0, 0, 1, "_NaN_"],
                 "Type": "pattern3d",

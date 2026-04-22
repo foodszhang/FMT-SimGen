@@ -688,8 +688,25 @@ class TumorGenerator:
         }
 
     def _check_constraints(self, foci: List[AnalyticFocus]) -> bool:
-        """U7-Fast: no extra constraints beyond fast validation + exact dedup."""
-        return len(foci) > 0
+        """U7-Fast: check inter-foci distance (no overlap).
+
+        Ensures each new focus is at least min_foci_distance_abs mm from all
+        existing foci, using actual sphere radii for true non-overlap.
+        """
+        if len(foci) < 2:
+            return True
+        new_focus = foci[-1]
+        c_new = np.asarray(new_focus.center)
+        r_new = float(new_focus.params.get("radius", 1.0))
+        for existing in foci[:-1]:
+            c_ex = np.asarray(existing.center)
+            r_ex = float(existing.params.get("radius", 1.0))
+            dist = float(np.linalg.norm(c_new - c_ex))
+            min_dist = r_new + r_ex  # true non-overlap: centers must be >= sum of radii
+            min_dist = max(min_dist, self.min_foci_distance_abs)  # but respect config floor
+            if dist < min_dist:
+                return False
+        return True
 
     def generate_sample(
         self,
@@ -702,7 +719,7 @@ class TumorGenerator:
         Pipeline:
         1. Sample random candidate center (80% dorsal / 20% lateral bias)
         2. Validate with is_valid_fast (4 rules: no air, no bone, soft≥50%, depth 2-6mm)
-        3. Check minimal dedup (exact duplicate key only)
+        3. Check inter-foci distance (no overlap) and exact dedup
         4. Accept sample
 
         Parameters
@@ -717,27 +734,22 @@ class TumorGenerator:
         Returns
         -------
         TumorSample
-            Generated tumor sample with random foci.
+            Generated tumor sample with 1-N foci (multi-foci supported).
         """
         if num_foci is None:
             num_foci = self._sample_num_foci()
-        if num_foci != 1:
-            logger.warning(
-                "U7-Fast main path is single-focus; forcing num_foci=1 (requested=%s)",
-                num_foci,
-            )
-            num_foci = 1
-        shape = self._rng.choice(self.shapes)
-        radius = self._rng.uniform(*self.radius_range)
 
         foci: List[AnalyticFocus] = []
         organ_constraint_passed = True
 
         for focus_idx in range(num_foci):
+            # Each focus gets its own shape and radius
+            shape = self._rng.choice(self.shapes)
+            radius = self._rng.uniform(*self.radius_range)
             center = None
             is_anchor = focus_idx == 0
             attempts = 0
-            max_attempts = 200
+            max_attempts = 500
 
             while center is None and attempts < max_attempts:
                 attempts += 1
