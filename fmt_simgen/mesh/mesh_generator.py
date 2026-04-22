@@ -137,15 +137,16 @@ class MeshGenerator:
         nodes_phys = node[:, :3] * effective_voxel_size
         tissue_labels_elem = elem[:, 4].astype(np.int32)
 
-        surface_mask = face[:, 3] > 0
-        surface_faces = face[surface_mask, :3].astype(np.int32) - 1
-        logger.info(f"Surface faces: {surface_faces.shape[0]}")
+        tet_elements = elem[:, :4].astype(np.int32) - 1
+        tet_elements = self._ensure_tet_orientation(nodes_phys, tet_elements)
+        surface_faces = self._extract_exterior_faces_fast(tet_elements)
+        logger.info(f"Exterior hull faces (count==1 filter): {surface_faces.shape[0]}")
 
         surface_node_set = np.unique(surface_faces)
         surface_node_indices = surface_node_set.astype(np.int32)
         logger.info(f"Surface nodes: {len(surface_node_indices)}")
 
-        quality = self.check_quality(nodes_phys, elem[:, :4].astype(np.int32) - 1)
+        quality = self.check_quality(nodes_phys, tet_elements)
         logger.info(
             f"Mesh quality: nodes={quality.num_nodes}, "
             f"elements={quality.num_elements}, "
@@ -154,7 +155,7 @@ class MeshGenerator:
 
         mesh_data = MeshData(
             nodes=nodes_phys,
-            elements=elem[:, :4].astype(np.int32) - 1,
+            elements=tet_elements,
             tissue_labels=tissue_labels_elem,
             surface_faces=surface_faces,
             surface_node_indices=surface_node_indices,
@@ -303,6 +304,121 @@ class MeshGenerator:
         )
 
         return maxvol_estimate
+
+    @staticmethod
+    def _ensure_tet_orientation(
+        nodes: np.ndarray, tet_elements: np.ndarray
+    ) -> np.ndarray:
+        """Fix iso2mesh tet vertex ordering to right-hand rule.
+
+        iso2mesh/cgalmesh does not guarantee tet vertex order produces
+        positive determinant. This method detects and swaps vertex 2/3
+        for tets with negative volume.
+
+        Parameters
+        ----------
+        nodes : np.ndarray
+            Node coordinates [N, 3].
+        tet_elements : np.ndarray
+            Tetrahedron node indices [T, 4], 0-based.
+
+        Returns
+        -------
+        np.ndarray
+            Tet elements with positive determinants [T, 4].
+        """
+        v0 = nodes[tet_elements[:, 0]]
+        v1 = nodes[tet_elements[:, 1]]
+        v2 = nodes[tet_elements[:, 2]]
+        v3 = nodes[tet_elements[:, 3]]
+
+        cross23 = np.cross(v1 - v0, v2 - v0)
+        det = np.sum(cross23 * (v3 - v0), axis=1)
+
+        bad = det < 0
+        if bad.sum() == 0:
+            return tet_elements
+
+        result = tet_elements.copy()
+        result[bad, 2] = tet_elements[bad, 3]
+        result[bad, 3] = tet_elements[bad, 2]
+        logger.info(f"  Fixed orientation on {bad.sum()}/{len(tet_elements)} tets")
+        return result
+
+    @staticmethod
+    def _extract_exterior_faces_fast(tet_elements: np.ndarray) -> np.ndarray:
+        """Extract exterior hull faces via count==1 filter, O(T log T) vectorized.
+
+        A face is an exterior hull face iff it appears in exactly one tet.
+        Each tet supplies 4 oriented faces with the "absent vertex" winding:
+          absent v0 → [v1, v2, v3]
+          absent v1 → [v0, v3, v2]
+          absent v2 → [v0, v1, v3]
+          absent v3 → [v0, v2, v1]
+
+        This automatically produces outward-pointing normals.
+
+        Parameters
+        ----------
+        tet_elements : np.ndarray
+            Tetrahedron node indices [T, 4], 0-based, right-hand oriented.
+
+        Returns
+        -------
+        np.ndarray
+            Exterior hull faces [F_ext, 3], int32, 0-based.
+        """
+        T = tet_elements.shape[0]
+
+        f0 = tet_elements[:, [1, 2, 3]]
+        f1 = tet_elements[:, [0, 3, 2]]
+        f2 = tet_elements[:, [0, 1, 3]]
+        f3 = tet_elements[:, [0, 2, 1]]
+
+        all_faces = np.concatenate([f0, f1, f2, f3], axis=0).astype(np.int32)
+        all_tets = np.repeat(np.arange(T, dtype=np.int32), 4)
+        all_fids = np.tile(np.arange(4, dtype=np.int32), T)
+
+        # Canonicalize: sort node indices within each face
+        sorted_faces = np.sort(all_faces, axis=1)
+
+        # Group identical sorted faces; lexsort by sorted face only (no tiebreaker)
+        order = np.lexsort((sorted_faces[:, 2], sorted_faces[:, 1], sorted_faces[:, 0]))
+        sorted_faces = sorted_faces[order]
+        all_tets = all_tets[order]
+        all_fids = all_fids[order]
+
+        # Find boundaries between different face groups
+        diff = np.diff(sorted_faces, axis=0, prepend=[[-1, -1, -1]])
+        is_diff = np.any(diff != 0, axis=1)  # True at boundary starts
+
+        run_start = np.zeros(len(sorted_faces), dtype=bool)
+        run_start[0] = True
+        run_start[1:] = is_diff[1:]
+
+        run_id = np.cumsum(run_start)
+        n_runs = int(run_id[-1])
+        run_counts = np.bincount(run_id, minlength=n_runs + 1)
+
+        exterior_mask = run_counts[run_id] == 1
+
+        ext_tets = all_tets[exterior_mask]
+        ext_fids = all_fids[exterior_mask]
+
+        result = np.zeros((len(ext_tets), 3), dtype=np.int32)
+        for i in range(len(ext_tets)):
+            tet = tet_elements[ext_tets[i]]
+            fid = ext_fids[i]
+            if fid == 0:
+                result[i] = [tet[1], tet[2], tet[3]]
+            elif fid == 1:
+                result[i] = [tet[0], tet[3], tet[2]]
+            elif fid == 2:
+                result[i] = [tet[0], tet[1], tet[3]]
+            else:
+                result[i] = [tet[0], tet[2], tet[1]]
+
+        return result
 
     def extract_surface(self, nodes: np.ndarray, elements: np.ndarray) -> np.ndarray:
         """Extract surface triangles from tetrahedral mesh.
