@@ -137,16 +137,25 @@ class MeshGenerator:
         nodes_phys = node[:, :3] * effective_voxel_size
         tissue_labels_elem = elem[:, 4].astype(np.int32)
 
-        tet_elements = elem[:, :4].astype(np.int32) - 1
-        tet_elements = self._ensure_tet_orientation(nodes_phys, tet_elements)
-        surface_faces = self._extract_exterior_faces_fast(tet_elements)
-        logger.info(f"Exterior hull faces (count==1 filter): {surface_faces.shape[0]}")
+        tet_elements_raw = elem[:, :4].astype(np.int32) - 1
+        tet_elements_raw = self._ensure_tet_orientation(nodes_phys, tet_elements_raw)
 
-        surface_node_set = np.unique(surface_faces)
-        surface_node_indices = surface_node_set.astype(np.int32)
-        logger.info(f"Surface nodes: {len(surface_node_indices)}")
+        # === 新的:先合并节点,再提取边界 ===
+        merged_nodes, merged_elements, surface_faces, surface_node_indices = \
+            self._merge_dup_nodes_and_extract_boundary(
+                nodes_phys, tet_elements_raw, tissue_labels_elem,
+                tol=max(effective_voxel_size * 1e-3, 1e-6),
+            )
 
-        quality = self.check_quality(nodes_phys, tet_elements)
+        logger.info(
+            f"节点合并: {len(nodes_phys)} → {len(merged_nodes)} "
+            f"(复制率 {len(nodes_phys)/len(merged_nodes):.2f}×)"
+        )
+        logger.info(f"边界面: {len(surface_faces)} 三角形, "
+                    f"{len(surface_node_indices)} unique 节点, "
+                    f"F/V = {len(surface_faces)/len(surface_node_indices):.2f}")
+
+        quality = self.check_quality(merged_nodes, merged_elements)
         logger.info(
             f"Mesh quality: nodes={quality.num_nodes}, "
             f"elements={quality.num_elements}, "
@@ -154,8 +163,8 @@ class MeshGenerator:
         )
 
         mesh_data = MeshData(
-            nodes=nodes_phys,
-            elements=tet_elements,
+            nodes=merged_nodes,
+            elements=merged_elements,
             tissue_labels=tissue_labels_elem,
             surface_faces=surface_faces,
             surface_node_indices=surface_node_indices,
@@ -420,7 +429,70 @@ class MeshGenerator:
 
         return result
 
-    def extract_surface(self, nodes: np.ndarray, elements: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _merge_dup_nodes_and_extract_boundary(
+        nodes: np.ndarray,
+        tet_elements: np.ndarray,
+        tissue_labels: np.ndarray,
+        tol: float = 1e-6,
+    ) -> tuple:
+        """Merge CGAL-duplicated nodes, then extract exterior hull via count==1.
+
+        CGAL's mesh generator replicates nodes at multi-label boundaries.
+        This function: (1) merges duplicates by rounding coords, then (2) runs
+        the preAmiraMesh.m count==1 exterior hull filter on the merged topology.
+
+        Returns (merged_nodes, merged_elements, boundary_faces, surface_node_idx).
+        """
+        # ── 1. Merge duplicate nodes ──
+        keys = np.round(nodes / tol).astype(np.int64)
+        _, uniq_idx, inverse = np.unique(
+            keys, axis=0, return_index=True, return_inverse=True
+        )
+        merged_nodes = nodes[uniq_idx]
+        merged_elements = inverse[tet_elements].astype(np.int32)
+
+        # ── 2. Build all 4T oriented faces ──
+        T = merged_elements.shape[0]
+        faces = np.concatenate([
+            merged_elements[:, [0, 1, 2]],
+            merged_elements[:, [0, 1, 3]],
+            merged_elements[:, [0, 2, 3]],
+            merged_elements[:, [1, 2, 3]],
+        ], axis=0)
+        tet_id = np.tile(np.arange(T, dtype=np.int32), 4)
+        local_id = np.repeat(np.arange(4, dtype=np.int32), T)
+
+        # ── 3. Count appearances via sorted-group ──
+        sorted_faces = np.sort(faces, axis=1)
+        order = np.lexsort(sorted_faces.T[::-1])
+        sf = sorted_faces[order]
+        tid = tet_id[order]
+        lid = local_id[order]
+
+        diff = np.any(np.diff(sf, axis=0) != 0, axis=1)
+        run_start = np.concatenate([[True], diff])
+        run_id = np.cumsum(run_start) - 1
+        counts = np.bincount(run_id)
+        is_bdry = counts[run_id] == 1
+
+        bnd_tet = tid[is_bdry]
+        bnd_lid = lid[is_bdry]
+
+        # ── 4. Reconstruct outward-winding faces ──
+        LOCAL_FACES = np.array([
+            [1, 2, 3],    # absent v0
+            [0, 3, 2],    # absent v1
+            [0, 1, 3],    # absent v2
+            [0, 2, 1],    # absent v3
+        ], dtype=np.int32)
+        boundary_faces = merged_elements[
+            bnd_tet[:, None], LOCAL_FACES[bnd_lid]
+        ].astype(np.int32)
+
+        surface_node_idx = np.unique(boundary_faces).astype(np.int32)
+
+        return merged_nodes, merged_elements, boundary_faces, surface_node_idx
         """Extract surface triangles from tetrahedral mesh.
 
         Boundary faces are triangles that appear exactly once across all

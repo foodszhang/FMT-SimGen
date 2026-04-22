@@ -264,17 +264,10 @@ def main():
         f"Face index {mesh_data.surface_faces.max()} out of range [{mesh_data.nodes.shape[0]}]"
     )
 
-    # Compute exterior hull faces (adjacent to exactly 1 tet)
-    exterior_surface_faces = filter_exterior_faces(
-        mesh_data.elements, mesh_data.surface_faces
-    )
-
-    # Save
-    mesh_file = str(OUTPUT_DIR / "mesh.npz")
-    generator.save_exterior(
-        mesh_data, exterior_surface_faces, str(OUTPUT_DIR / "mesh")
-    )
-    logger.info(f"Mesh saved to: {mesh_file}")
+    # surface_faces in mesh_data is already exterior hull (count==1)
+    # from MeshGenerator._extract_exterior_faces_fast — no extra filtering needed
+    generator.save(mesh_data, str(OUTPUT_DIR / "mesh"))
+    logger.info(f"Mesh saved to: {OUTPUT_DIR / "mesh.npz"}")
 
     # ── Visualizations ─────────────────────────────────────────────────────────
     logger.info("\nGenerating visualizations...")
