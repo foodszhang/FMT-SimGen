@@ -73,35 +73,23 @@ norm = plt.Normalize(0, meas_b.max())
 for ax_idx, (elev, azim) in enumerate(view_angles):
     ax = fig.add_subplot(2, 2, ax_idx + 1, projection='3d')
 
-    # --- No-signal triangles: gray wireframe (very faint) ---
-    no_sig_faces = surf_faces[~tri_has_signal]
-    for fi, fs, ft in no_sig_faces:
+    # All triangles: wireframe lines, colored by mean meas_b on that triangle
+    from mpl_toolkits.mplot3d.art3d import Line3DCollection
+    segs = []
+    seg_colors = []
+    for i, (fi, fs, ft) in enumerate(surf_faces):
         xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
         ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
         zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
-        ax.plot(xs, ys, zs, color='lightgray', lw=0.1, alpha=0.12)
+        segs.append([list(x) for x in zip(xs, ys, zs)])
+        seg_colors.append(tri_vals[i])
 
-    # --- Signal triangles: filled polygons via Poly3DCollection ---
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    sig_faces = surf_faces[tri_has_signal]
-    sig_vals = tri_vals[tri_has_signal]
-    triangles = []
-    colors = []
-    for i, (fi, fs, ft) in enumerate(sig_faces):
-        v = sig_vals[i]
-        if v <= 0:
-            continue
-        c = cmap(min(v / meas_b.max(), 1.0))
-        triangles.append([
-            [surf_nodes[fi, 0], surf_nodes[fi, 1], surf_nodes[fi, 2]],
-            [surf_nodes[fs, 0], surf_nodes[fs, 1], surf_nodes[fs, 2]],
-            [surf_nodes[ft, 0], surf_nodes[ft, 1], surf_nodes[ft, 2]],
-        ])
-        colors.append(c)
-
-    if triangles:
-        poly_coll = Poly3DCollection(triangles, facecolors=colors, alpha=0.85, edgecolors='none')
-        ax.add_collection3d(poly_coll)
+    lc = Line3DCollection(segs, cmap=cmap, norm=norm, linewidths=0.3, alpha=0.7)
+    lc.set_array(np.array(seg_colors))
+    ax.add_collection(lc)
+    ax.set_xlim(surf_nodes[:, 0].min(), surf_nodes[:, 0].max())
+    ax.set_ylim(surf_nodes[:, 1].min(), surf_nodes[:, 1].max())
+    ax.set_zlim(surf_nodes[:, 2].min(), surf_nodes[:, 2].max())
 
     # Mark foci
     for fc in focus_centers:
@@ -111,14 +99,12 @@ for ax_idx, (elev, azim) in enumerate(view_angles):
     ax.set_xlabel('X (mm)')
     ax.set_ylabel('Y (mm)')
     ax.set_zlabel('Z (mm)')
-    ax.set_title(f'elev={elev} azim={azim} | gray=no-signal, color=signal')
+    ax.set_title(f'elev={elev} azim={azim}')
     ax.view_init(elev=elev, azim=azim)
     ax.set_box_aspect(None, zoom=0.8)
 
 # Colorbar
-sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-sm.set_array([])
-fig.colorbar(sm, ax=fig.axes, shrink=0.4, label='measurement_b', orientation='horizontal', pad=0.06)
+fig.colorbar(lc, ax=fig.axes, shrink=0.4, label='measurement_b', orientation='horizontal', pad=0.06)
 fig.suptitle(f'{sample_name} | {np.count_nonzero(meas_b>0)}/{len(meas_b)} nodes with signal | {len(foci)} foci', fontsize=12)
 plt.tight_layout()
 plt.savefig('output/visualization/sample_0000_mesh_3d.png', dpi=150, bbox_inches='tight')

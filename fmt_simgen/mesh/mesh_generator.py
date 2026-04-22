@@ -120,42 +120,65 @@ class MeshGenerator:
             f"Effective voxel size after downsampling: {effective_voxel_size} mm"
         )
 
-        logger.info("Calling iso2mesh vol2mesh with cgalmesh method...")
+        logger.info("Calling iso2mesh vol2mesh with method='tetgen' (CGAL surf + TetGen fill)...")
         node, elem, face = iso2mesh.vol2mesh(
             downsampled_vol,
             ix=np.arange(0, downsample_shape[0]),
             iy=np.arange(0, downsample_shape[1]),
             iz=np.arange(0, downsample_shape[2]),
-            opt={},
+            opt={"radbound": 1.0, "distbound": 1.0},
             maxvol=self._estimate_maxvol(downsample_shape, effective_voxel_size),
             dofix=True,
-            method="cgalmesh",
+            method="tetgen",
         )
-
-        logger.info(f"Mesh generated: nodes={node.shape[0]}, elements={elem.shape[0]}")
-
-        nodes_phys = node[:, :3] * effective_voxel_size
-        tissue_labels_elem = elem[:, 4].astype(np.int32)
-
-        tet_elements_raw = elem[:, :4].astype(np.int32) - 1
-        tet_elements_raw = self._ensure_tet_orientation(nodes_phys, tet_elements_raw)
-
-        # === 新的:先合并节点,再提取边界 ===
-        merged_nodes, merged_elements, surface_faces, surface_node_indices = \
-            self._merge_dup_nodes_and_extract_boundary(
-                nodes_phys, tet_elements_raw, tissue_labels_elem,
-                tol=max(effective_voxel_size * 1e-3, 1e-6),
-            )
-
         logger.info(
-            f"节点合并: {len(nodes_phys)} → {len(merged_nodes)} "
-            f"(复制率 {len(nodes_phys)/len(merged_nodes):.2f}×)"
+            f"vol2mesh returned: node.shape={node.shape}, "
+            f"elem.shape={elem.shape}, face.shape={face.shape if face is not None else None}"
         )
-        logger.info(f"边界面: {len(surface_faces)} 三角形, "
-                    f"{len(surface_node_indices)} unique 节点, "
-                    f"F/V = {len(surface_faces)/len(surface_node_indices):.2f}")
 
-        quality = self.check_quality(merged_nodes, merged_elements)
+        # ─── Scale nodes to physical mm ───────────────────────────────────────────
+        nodes_phys = node[:, :3] * effective_voxel_size
+
+        # ─── Extract tissue labels ────────────────────────────────────────────────
+        # TetGen output elem shape:
+        #   [T, 5] → tet + region marker (expected when vol2surf passes `regions`)
+        #   [T, 4] → no region marker (fallback: look up label from downsampled volume)
+        if elem.shape[1] >= 5:
+            tissue_labels_elem = elem[:, 4].astype(np.int32)
+            logger.info(
+                f"Tissue labels from TetGen region markers: "
+                f"{dict(zip(*np.unique(tissue_labels_elem, return_counts=True)))}"
+            )
+        else:
+            logger.warning(
+                f"elem has only {elem.shape[1]} cols; no TetGen region markers. "
+                "Looking up tissue labels from downsampled_vol at tet centroids."
+            )
+            tet_idx_1b = elem[:, :4].astype(np.int32) - 1
+            cvox = node[tet_idx_1b, :3].mean(axis=1)
+            cx = np.clip(np.round(cvox[:, 0]).astype(int), 0, downsample_shape[0] - 1)
+            cy = np.clip(np.round(cvox[:, 1]).astype(int), 0, downsample_shape[1] - 1)
+            cz = np.clip(np.round(cvox[:, 2]).astype(int), 0, downsample_shape[2] - 1)
+            tissue_labels_elem = downsampled_vol[cx, cy, cz].astype(np.int32)
+
+        # ─── 0-based tets + winding fixup ─────────────────────────────────────────
+        tet_elements = elem[:, :4].astype(np.int32) - 1
+        tet_elements = self._ensure_tet_orientation(nodes_phys, tet_elements)
+
+        # ─── Exterior surface via count==1 (valid because TetGen mesh is conforming) ──
+        surface_faces = self._extract_exterior_faces_fast(tet_elements)
+        surface_node_indices = np.unique(surface_faces).astype(np.int32)
+
+        F, V_surf = len(surface_faces), len(surface_node_indices)
+        logger.info(
+            f"Exterior surface: F={F}, V={V_surf}, "
+            f"F/V={F/max(V_surf,1):.3f} (closed 2-manifold expects ≈ 2.0)"
+        )
+
+        # ─── Conforming-mesh sanity check ─────────────────────────────────────────
+        self._verify_conforming_mesh(surface_faces, surface_node_indices)
+
+        quality = self.check_quality(nodes_phys, tet_elements)
         logger.info(
             f"Mesh quality: nodes={quality.num_nodes}, "
             f"elements={quality.num_elements}, "
@@ -163,8 +186,8 @@ class MeshGenerator:
         )
 
         mesh_data = MeshData(
-            nodes=merged_nodes,
-            elements=merged_elements,
+            nodes=nodes_phys,
+            elements=tet_elements,
             tissue_labels=tissue_labels_elem,
             surface_faces=surface_faces,
             surface_node_indices=surface_node_indices,
@@ -430,108 +453,73 @@ class MeshGenerator:
         return result
 
     @staticmethod
-    def _merge_dup_nodes_and_extract_boundary(
-        nodes: np.ndarray,
-        tet_elements: np.ndarray,
-        tissue_labels: np.ndarray,
-        tol: float = 1e-6,
-    ) -> tuple:
-        """Merge CGAL-duplicated nodes, then extract exterior hull via count==1.
+    def _verify_conforming_mesh(
+        surface_faces: np.ndarray,
+        surface_node_indices: np.ndarray,
+    ) -> None:
+        """Assert the extracted surface is a conforming closed 2-manifold.
 
-        CGAL's mesh generator replicates nodes at multi-label boundaries.
-        This function: (1) merges duplicates by rounding coords, then (2) runs
-        the preAmiraMesh.m count==1 exterior hull filter on the merged topology.
+        FMT FEM requires shared-node interfaces across tissues. If this check
+        fails, the mesh is NOT suitable for FEM assembly and the pipeline should
+        stop rather than silently produce wrong meas_b.
 
-        Returns (merged_nodes, merged_elements, boundary_faces, surface_node_idx).
+        Checks:
+          - F/V ≈ 2.0          (closed 2-manifold topology)
+          - Edge valence = 2   (every boundary edge shared by exactly 2 faces)
+          - Euler char = 2     (genus-0 closed surface)
         """
-        # ── 1. Merge duplicate nodes ──
-        keys = np.round(nodes / tol).astype(np.int64)
-        _, uniq_idx, inverse = np.unique(
-            keys, axis=0, return_index=True, return_inverse=True
+        F = len(surface_faces)
+        V = len(surface_node_indices)
+
+        e01 = np.sort(surface_faces[:, [0, 1]], axis=1)
+        e12 = np.sort(surface_faces[:, [1, 2]], axis=1)
+        e02 = np.sort(surface_faces[:, [0, 2]], axis=1)
+        edges = np.concatenate([e01, e12, e02], axis=0)
+        uniq_edges, edge_counts = np.unique(edges, axis=0, return_counts=True)
+        E = len(uniq_edges)
+
+        val1 = int((edge_counts == 1).sum())
+        val2 = int((edge_counts == 2).sum())
+        val3p = int((edge_counts >= 3).sum())
+        euler = V - E + F
+
+        logger.info(
+            f"[MESH-CHECK] V={V}, E={E}, F={F}, Euler X={euler} (expect 2)"
         )
-        merged_nodes = nodes[uniq_idx]
-        merged_elements = inverse[tet_elements].astype(np.int32)
-
-        # ── 2. Build all 4T oriented faces ──
-        T = merged_elements.shape[0]
-        faces = np.concatenate([
-            merged_elements[:, [0, 1, 2]],
-            merged_elements[:, [0, 1, 3]],
-            merged_elements[:, [0, 2, 3]],
-            merged_elements[:, [1, 2, 3]],
-        ], axis=0)
-        tet_id = np.tile(np.arange(T, dtype=np.int32), 4)
-        local_id = np.repeat(np.arange(4, dtype=np.int32), T)
-
-        # ── 3. Count appearances via sorted-group ──
-        sorted_faces = np.sort(faces, axis=1)
-        order = np.lexsort(sorted_faces.T[::-1])
-        sf = sorted_faces[order]
-        tid = tet_id[order]
-        lid = local_id[order]
-
-        diff = np.any(np.diff(sf, axis=0) != 0, axis=1)
-        run_start = np.concatenate([[True], diff])
-        run_id = np.cumsum(run_start) - 1
-        counts = np.bincount(run_id)
-        is_bdry = counts[run_id] == 1
-
-        bnd_tet = tid[is_bdry]
-        bnd_lid = lid[is_bdry]
-
-        # ── 4. Reconstruct outward-winding faces ──
-        LOCAL_FACES = np.array([
-            [1, 2, 3],    # absent v0
-            [0, 3, 2],    # absent v1
-            [0, 1, 3],    # absent v2
-            [0, 2, 1],    # absent v3
-        ], dtype=np.int32)
-        boundary_faces = merged_elements[
-            bnd_tet[:, None], LOCAL_FACES[bnd_lid]
-        ].astype(np.int32)
-
-        surface_node_idx = np.unique(boundary_faces).astype(np.int32)
-
-        return merged_nodes, merged_elements, boundary_faces, surface_node_idx
-        """Extract surface triangles from tetrahedral mesh.
-
-        Boundary faces are triangles that appear exactly once across all
-        tetrahedra faces.
-
-        Parameters
-        ----------
-        nodes : np.ndarray
-            Node coordinates [N×3].
-        elements : np.ndarray
-            Tetrahedron node indices [M×4].
-
-        Returns
-        -------
-        np.ndarray
-            Surface triangle indices [F×3].
-        """
-        num_elements = elements.shape[0]
-        face_counts: Dict[Tuple[int, int, int], int] = {}
-
-        for elem_idx in range(num_elements):
-            n0, n1, n2, n3 = elements[elem_idx]
-
-            faces = [
-                tuple(sorted([n0, n1, n2])),
-                tuple(sorted([n0, n1, n3])),
-                tuple(sorted([n0, n2, n3])),
-                tuple(sorted([n1, n2, n3])),
-            ]
-
-            for face in faces:
-                face_counts[face] = face_counts.get(face, 0) + 1
-
-        surface_faces = np.array(
-            [list(face) for face, count in face_counts.items() if count == 1],
-            dtype=np.int32,
+        logger.info(
+            f"[MESH-CHECK] Edge valence: =1:{val1}({val1/E*100:.1f}%)  "
+            f"=2:{val2}({val2/E*100:.1f}%)  >=3:{val3p}({val3p/E*100:.1f}%) "
+            f"(conforming closed mesh expects =2 ≈ 100%)"
         )
 
-        return surface_faces
+        problems = []
+        if F / max(V, 1) < 1.85:
+            problems.append(
+                f"F/V={F/V:.3f} < 1.85 — surface likely includes internal "
+                "tissue interfaces (non-conforming mesh)"
+            )
+        if val2 / max(E, 1) < 0.95:
+            problems.append(
+                f"only {val2/E*100:.1f}% of edges have valence=2 — surface "
+                "is non-manifold"
+            )
+        if abs(euler - 2) > 4:
+            problems.append(
+                f"Euler characteristic = {euler}, expected 2 — surface has "
+                "wrong topology"
+            )
+
+        if problems:
+            msg = (
+                "[MESH-CHECK] TetGen mesh did NOT produce a conforming "
+                "closed-manifold exterior:\n  - " + "\n  - ".join(problems)
+                + "\nFMT FEM assembly will be incorrect. Switch to manual "
+                "per-tissue surface + s2m pipeline."
+            )
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+        logger.info("[MESH-CHECK] Conforming closed-manifold mesh — FMT-ready.")
 
     def check_quality(
         self, nodes: np.ndarray, elements: np.ndarray
@@ -678,44 +666,6 @@ class MeshGenerator:
             tissue_labels=mesh_data.tissue_labels,
             surface_faces=mesh_data.surface_faces,
             surface_node_indices=mesh_data.surface_node_indices,
-        )
-
-        logger.info(f"Mesh saved to: {filepath}")
-        return filepath
-
-    def save_exterior(
-        self,
-        mesh_data: MeshData,
-        exterior_surface_faces: np.ndarray,
-        filename: str,
-    ) -> Path:
-        """Save mesh data including exterior hull faces to .npz file.
-
-        Parameters
-        ----------
-        mesh_data : MeshData
-            Mesh data to save.
-        exterior_surface_faces : np.ndarray [E×3]
-            Exterior hull faces (adjacent to exactly 1 tet).
-        filename : str
-            Output filename (without extension).
-
-        Returns
-        -------
-        Path
-            Path to saved file.
-        """
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        filepath = self.output_path / f"{filename}.npz"
-
-        np.savez(
-            filepath,
-            nodes=mesh_data.nodes,
-            elements=mesh_data.elements,
-            tissue_labels=mesh_data.tissue_labels,
-            surface_faces=mesh_data.surface_faces,
-            surface_node_indices=mesh_data.surface_node_indices,
-            exterior_surface_faces=exterior_surface_faces,
         )
 
         logger.info(f"Mesh saved to: {filepath}")

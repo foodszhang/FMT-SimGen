@@ -24,7 +24,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from fmt_simgen.mesh.mesh_generator import MeshGenerator
+from fmt_simgen.mesh import make_mesh_generator
 from fmt_simgen.frame_contract import TRUNK_SIZE_MM, assert_in_trunk_bbox
 
 logging.basicConfig(
@@ -182,6 +182,13 @@ def main():
         default=None,
         help="Max tetrahedron volume (mm³). If None, auto-estimate.",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="iso2mesh",
+        choices=["iso2mesh", "amira"],
+        help="Mesh generation backend.",
+    )
     args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,9 +220,10 @@ def main():
         "deep_maxvol": 5.0,
         "roi_maxvol": 1.0,
         "output_path": str(OUTPUT_DIR),
+        "mesh_backend": args.backend,
     }
 
-    generator = MeshGenerator(mesh_config)
+    generator = make_mesh_generator(mesh_config)
     logger.info(f"Generating mesh with downsample_factor={args.downsample}...")
 
     mesh_data = generator.generate(
@@ -264,10 +272,61 @@ def main():
         f"Face index {mesh_data.surface_faces.max()} out of range [{mesh_data.nodes.shape[0]}]"
     )
 
+    # ========== 诊断：这个 mesh 到底是哪种病 ==========
+    from scipy.spatial import cKDTree
+
+    mesh_nodes = mesh_data.nodes
+    mesh_elem  = mesh_data.elements
+    mesh_labels = mesh_data.tissue_labels
+    sfaces = mesh_data.surface_faces
+
+    N, T, F = len(mesh_nodes), len(mesh_elem), len(sfaces)
+    V_surf = len(np.unique(sfaces))
+    eff_vs = 0.1 * 8  # effective_voxel_size, mm
+
+    print("\n========== DIAG ==========")
+    print(f"N={N}, T={T}, F={F}, V_surf={V_surf}, F/V={F/V_surf:.3f}")
+
+    # [1] tissue label 分布
+    uniq_labels, counts = np.unique(mesh_labels, return_counts=True)
+    print(f"[1] #tissue_labels = {len(uniq_labels)}: "
+          f"{dict(zip(uniq_labels.tolist(), counts.tolist()))}")
+
+    # [2] 全局 NN 距离直方图
+    tree = cKDTree(mesh_nodes)
+    d, _ = tree.query(mesh_nodes, k=2)
+    nn = d[:, 1]
+    pct = [0.1, 1, 5, 25, 50, 75, 95, 99, 100]
+    q = np.percentile(nn, pct)
+    print(f"[2] NN dist percentiles (mm):")
+    for p, v in zip(pct, q):
+        print(f"     p{p:>5}: {v:.3e}   ({v/eff_vs*100:.3f}% of voxel)")
+    print(f"     min NN = {nn.min():.3e}, #(NN < 0.01*voxel) = {(nn < eff_vs*0.01).sum()}")
+
+    # [3] 表面面元质心：有多少深埋在 AABB 内部？
+    cent = mesh_nodes[sfaces].mean(axis=1)
+    lo, hi = mesh_nodes.min(axis=0), mesh_nodes.max(axis=0)
+    dist_to_wall = np.minimum(cent - lo, hi - cent).min(axis=1)
+    bbox_half = ((hi - lo) / 2).min()
+    deep = dist_to_wall > 0.2 * bbox_half
+    print(f"[3] surface-face centroids deep inside AABB "
+          f"(>20% from any wall): {deep.sum()}/{F} = {deep.sum()/F*100:.1f}%")
+
+    # [4] 每条边出现在几个表面三角形中？流形应为 2，非流形会出现 1 或 >2
+    e01 = np.sort(sfaces[:, [0, 1]], axis=1)
+    e12 = np.sort(sfaces[:, [1, 2]], axis=1)
+    e02 = np.sort(sfaces[:, [0, 2]], axis=1)
+    edges = np.concatenate([e01, e12, e02], axis=0)
+    _, ec = np.unique(edges, axis=0, return_counts=True)
+    print(f"[4] surface edge-valence histogram: "
+          f"=1:{(ec==1).sum()}  =2:{(ec==2).sum()}  >=3:{(ec>=3).sum()}")
+    print("==========================\n")
+
     # surface_faces in mesh_data is already exterior hull (count==1)
     # from MeshGenerator._extract_exterior_faces_fast — no extra filtering needed
     generator.save(mesh_data, str(OUTPUT_DIR / "mesh"))
     logger.info(f"Mesh saved to: {OUTPUT_DIR / "mesh.npz"}")
+    mesh_file = OUTPUT_DIR / "mesh.npz"
 
     # ── Visualizations ─────────────────────────────────────────────────────────
     logger.info("\nGenerating visualizations...")

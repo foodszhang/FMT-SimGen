@@ -19,6 +19,8 @@ dependencies = [
   "numba>=0.65.0",
   "scikit-image>=0.26.0",
   "plotly>=6.7.0",
+  "tetgen>=0.8.3",
+  "vtk>=9.6.1",
 ]
 
 [tool.uv.sources]

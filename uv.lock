@@ -637,11 +637,13 @@ dependencies = [
     { name = "scikit-image" },
     { name = "scikit-learn" },
     { name = "scipy" },
+    { name = "tetgen" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "torchvision", version = "0.26.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "trame" },
+    { name = "vtk" },
 ]
 
 [package.metadata]
@@ -658,11 +660,13 @@ requires-dist = [
     { name = "scikit-image", specifier = ">=0.26.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "scipy", specifier = ">=1.7.0" },
+    { name = "tetgen", specifier = ">=0.8.3" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.9.0" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=0.20.0" },
     { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=0.20.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "trame", specifier = ">=3.12.0" },
+    { name = "vtk", specifier = ">=9.6.1" },
 ]
 
 [[package]]
@@ -2804,6 +2808,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8a/11/965c6fd8e5cc254f1fe142d547387da17a8ebfd75a3455f637c663fb38a0/terminado-0.18.1.tar.gz", hash = "sha256:de09f2c4b85de4765f7714688fff57d3e75bad1f909b589fde880460c753fd2e", size = 32701, upload-time = "2024-03-12T14:34:39.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/9e/2064975477fdc887e47ad42157e214526dcad8f317a948dee17e1659a62f/terminado-0.18.1-py3-none-any.whl", hash = "sha256:a4468e1b37bb318f8a86514f65814e1afc977cf29b3992a4500d9dd305dcceb0", size = 14154, upload-time = "2024-03-12T14:34:36.569Z" },
+]
+
+[[package]]
+name = "tetgen"
+version = "0.8.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/37/50eace0be2c97ca2eff048de93c6ee1c4af0dc4be587a5d8e4fc83f06113/tetgen-0.8.3.tar.gz", hash = "sha256:acaff9569da73700c7df027512a518ec6e6e091b537581a6fad497e68d170cf6", size = 825460, upload-time = "2026-03-10T05:23:50.805Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/51/a7f4fae5d2f15b865cbbde2ce589d106f7acebdc535c7db2ad491fc97b4d/tetgen-0.8.3-cp312-abi3-macosx_10_14_x86_64.whl", hash = "sha256:6e289e8c72caf2cf192063968459966993a4e00ba0cdde8256040638f1442113", size = 397479, upload-time = "2026-03-10T05:23:41.775Z" },
+    { url = "https://files.pythonhosted.org/packages/34/2c/7994135ab301fd62721e25622e43fde79131fec262cfd3db2cbd03edde9e/tetgen-0.8.3-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:004b4b41d8f3b51ec386118c026ae17d835a78686d6d168e62221fe12cf27455", size = 360931, upload-time = "2026-03-10T05:23:43.517Z" },
+    { url = "https://files.pythonhosted.org/packages/10/ed/775ac51a64aac00f74e033d76038705d999f27406637ef9164751648b749/tetgen-0.8.3-cp312-abi3-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:dc84db14a615b984dc6a4d6c2a222c55d8051b0cba97792c2d001be8d969ee8e", size = 405910, upload-time = "2026-03-10T05:23:45.483Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/28/56e3793c18d59c72fe9fcf958a1722d5baec404d3c87a55fd366b734e3a2/tetgen-0.8.3-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:32ea369a2397ca1d4a8edb151bf3404b96c82c57ffa4bec3232a9611fa118e21", size = 409506, upload-time = "2026-03-10T05:23:47.2Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/d0/dcb166aaf5f85db417f887706ef6e8048a88492ca0e79f358cd274fcf7f6/tetgen-0.8.3-cp312-abi3-win_amd64.whl", hash = "sha256:21982452c4c91d7fdd69101eaf18a3d3cb55c158571bcade04a83ed617305a28", size = 305701, upload-time = "2026-03-10T05:23:48.907Z" },
 ]
 
 [[package]]

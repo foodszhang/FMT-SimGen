@@ -1,0 +1,17 @@
+# U7 full regen: uniform trunk v2, voxel_grid_roi_size=38mm, multi-foci (1/2/3)
+# Multi-foci now supported via distance-checked generate_sample()
+_base_: trunk_v2_20260421_161440.yaml
+
+dataset:
+  num_samples: 1000
+  voxel_grid_roi_size_mm: 38.0
+  experiment_name: "uniform_trunk_v2_roi38_multi"
+
+tumor:
+  num_foci_distribution:
+    1: 0.30
+    2: 0.35
+    3: 0.35
+
+quality_filter:
+  max_retries: 50
