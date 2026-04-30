@@ -17,38 +17,41 @@ atlas:
   #   - Labels 15-21 = major organs (various volumes)
   #   - Label 1 = skin (16.7M voxels, covers entire body)
   #   - Label 2 = skeleton/bone (1.2M voxels)
+  # Tissue merge: unified with MCX classification (10 classes: 0-9)
+  # Both DE and MCX use the same label system for consistency
   tissue_merge:
     # Background
     0: 0
-    # Skin -> skin (label 1)
-    1: 1
+    # Skin + muscle/fat/cartilage/tongue -> soft_tissue (label 1)
+    1: 1   # skin
+    11: 1  # muscle
+    12: 1  # fat
+    13: 1  # cartilage
+    14: 1  # tongue
     # Skeleton -> bone (label 2)
     2: 2
     # Brain regions -> brain (label 3)
     3: 3
-    4: 3  # medulla
-    5: 3  # cerebellum
-    6: 3  # olfactory_bulb
-    7: 3  # external_brain
-    8: 3  # striatum
-    10: 3 # brain_other
-    # Muscle (label 11) - main subcutaneous tissue for tumor placement
-    11: 4
-    # Fat (label 12) - also subcutaneous
-    12: 4
-    # Cartilage (label 13) - soft tissue
-    13: 4
-    # Tongue (label 14) - in head region
-    14: 4
-    # Major organs - each keeps its label for now
-    9: 5   # heart
-    15: 6  # stomach
-    16: 7  # spleen
-    17: 8  # pancreas
-    18: 9  # liver
-    19: 10 # kidney
-    20: 10 # adrenal (close to kidney)
-    21: 11 # lung
+    4: 3   # medulla
+    5: 3   # cerebellum
+    6: 3   # olfactory_bulb
+    7: 3   # external_brain
+    8: 3   # striatum
+    10: 3  # brain_other
+    # Heart (label 4)
+    9: 4
+    # Stomach (label 5)
+    15: 5
+    # Spleen + pancreas -> abdominal (label 6)
+    16: 6  # spleen
+    17: 6  # pancreas
+    # Liver (label 7)
+    18: 7
+    # Kidney + adrenal (label 8)
+    19: 8  # kidney
+    20: 8  # adrenal
+    # Lung (label 9)
+    21: 9
 
 mesh:
   tool: "iso2mesh"
@@ -57,15 +60,15 @@ mesh:
   deep_maxvol: 5.0
   roi_maxvol: 1.0
   output_path: "assets/mesh/"
+  # Path to mesh file (can be overridden for different atlases)
+  mesh_file: "output/shared/digimouse_trunk_mesh.npz"
 
 physics:
   model: "DE"
   n: 1.37
 
   # Optical parameters in mm^-1
-  # Format: {simplified_label: {mua, mus (not mus'), g, n}}
-  # Note: MS-GDUN uses mus (reduced scattering), P1 uses mus (total scattering)
-  # Using MS-GDUN values (they computed mus' directly)
+  # Unified with MCX: 10 tissue classes (labels 0-9)
   tissues:
     background:
       label: 0
@@ -73,11 +76,11 @@ physics:
       mu_s_prime: 0.0
       g: 1.0
       n: 1.0
-    skin:
+    soft_tissue:
       label: 1
-      mu_a: 0.0338
-      mu_s_prime: 11.9827
-      g: 0.9
+      mu_a: 0.08697
+      mu_s_prime: 4.29071
+      g: 0.90
       n: 1.37
     bone:
       label: 2
@@ -91,50 +94,38 @@ physics:
       mu_s_prime: 15.9590
       g: 0.9
       n: 1.37
-    muscle:
-      label: 4
-      mu_a: 0.08697
-      mu_s_prime: 4.29071
-      g: 0.90
-      n: 1.37
     heart:
-      label: 5
+      label: 4
       mu_a: 0.065
       mu_s_prime: 22.4
       g: 0.9
       n: 1.38
     stomach:
-      label: 6
+      label: 5
       mu_a: 0.028
       mu_s_prime: 18.7
       g: 0.88
       n: 1.37
-    spleen:
-      label: 7
+    abdominal:
+      label: 6
       mu_a: 0.052
       mu_s_prime: 25.3
       g: 0.89
       n: 1.38
-    pancreas:
-      label: 8
-      mu_a: 0.035
-      mu_s_prime: 16.2
-      g: 0.87
-      n: 1.37
     liver:
-      label: 9
+      label: 7
       mu_a: 0.041
       mu_s_prime: 20.5
       g: 0.88
       n: 1.37
     kidney:
-      label: 10
+      label: 8
       mu_a: 0.038
       mu_s_prime: 19.2
       g: 0.89
       n: 1.37
     lung:
-      label: 11
+      label: 9
       mu_a: 0.022
       mu_s_prime: 35.7
       g: 0.86
@@ -181,7 +172,7 @@ mcx:
   material_path: "output/shared/mcx_material.yaml"
 
   # 躯干裁剪参数（Y 方向，对应 anterior→posterior）
-  # Y ∈ [30mm, 70mm] at 0.1mm/voxel → voxel index [300, 700]
+  # Y ∈ [34mm, 74mm] at 0.1mm/voxel → voxel index [340, 740) at 0.1mm/voxel → voxel index [300, 700]
   trunk_crop:
     y_start: 340
     y_end: 740
@@ -203,6 +194,46 @@ mcx:
 
   # 组织类别数量
   num_tissues: 10  # labels 0-9
+
+  # MCX 简化组织映射 (原始 Digimouse label → MCX label)
+  # 将 22 类原始组织合并为 10 类
+  tissue_mapping:
+    0: 0   # background
+    1: 1   # skin → soft_tissue
+    2: 2   # skeleton → bone
+    3: 3   # brain
+    4: 3   # medulla → brain
+    5: 3   # cerebellum → brain
+    6: 3   # olfactory_bulb → brain
+    7: 3   # external_brain → brain
+    8: 3   # striatum → brain
+    9: 4   # heart
+    10: 3  # brain_other → brain
+    11: 1  # muscle → soft_tissue
+    12: 1  # fat → soft_tissue
+    13: 1  # cartilage → soft_tissue
+    14: 1  # tongue → soft_tissue
+    15: 5  # stomach
+    16: 6  # spleen → abdominal
+    17: 6  # pancreas → abdominal
+    18: 7  # liver
+    19: 8  # kidney
+    20: 8  # adrenal → kidney
+    21: 9  # lung
+
+  # MCX label 名称和参数来源
+  # param_source 指向 physics.tissues 中的组织名称
+  tissue_classes:
+    0: {name: background, param_source: background}
+    1: {name: soft_tissue, param_source: soft_tissue}
+    2: {name: bone, param_source: bone}
+    3: {name: brain, param_source: brain}
+    4: {name: heart, param_source: heart}
+    5: {name: stomach, param_source: stomach}
+    6: {name: abdominal, param_source: abdominal}
+    7: {name: liver, param_source: liver}
+    8: {name: kidney, param_source: kidney}
+    9: {name: lung, param_source: lung}
 
 # === TurntableCamera 视图配置 ===
 view_config:

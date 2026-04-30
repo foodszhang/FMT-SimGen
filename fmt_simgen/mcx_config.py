@@ -64,13 +64,11 @@ def generate_mcx_config(
     if nonzero_count == 0:
         raise ValueError(f"Sample {sample_id}: pattern has zero non-zero voxels")
 
-    # Transpose from (nx, ny, nz) to (nz, ny, nx) for MCX binary
-    pattern_zyx = pattern.transpose(2, 1, 0)
-
-    # Save binary file
+    # Save binary file: transpose from (nx, ny, nz) to (nz, ny, nx) for MCX
+    pattern_t = pattern.transpose(2, 1, 0)
     source_bin_path = output_dir / f"source-{sample_id}.bin"
-    pattern_zyx.tofile(source_bin_path)
-    logger.debug(f"Saved source binary: {source_bin_path} (shape {pattern_zyx.shape})")
+    pattern_t.tofile(source_bin_path)
+    logger.debug(f"Saved source binary: {source_bin_path} (shape {pattern_t.shape})")
 
     # Load media list from material YAML
     material_path = Path(
@@ -86,8 +84,13 @@ def generate_mcx_config(
         media_list = []
 
     # Build JSON config
-    nx, ny, nz = pattern.shape  # (nx, ny, nz) from tumor_params_to_mcx_pattern
-    x0, y0, z0 = origin
+    # Pattern shape is (nx, ny, nz) where:
+    # - nx = volume Z range (pattern x-index -> volume Z)
+    # - ny = volume Y range (pattern y-index -> volume Y)
+    # - nz = volume X range (pattern z-index -> volume X)
+    # MCX: pattern[x,y,z] -> volume[Pos_z+x, Pos_y+y, Pos_x+z]
+    pnx, pny, pnz = pattern.shape
+    x0, y0, z0 = origin  # (x0, y0, z0) in XYZ voxel order (volume coordinates)
 
     # Determine volume file path.
     # VolumeFile in MCX JSON is relative to the directory where MCX runs (sample dir).
@@ -140,16 +143,21 @@ def generate_mcx_config(
         },
         "Optode": {
             "Source": {
-                "Pos": [int(x0), int(y0), int(z0)],
+                # Pos must be in ZYX order to match Dim=[Z,Y,X]
+                # MCX: pattern[x,y,z] -> volume[Pos_z+x, Pos_y+y, Pos_x+z]
+                # x0,y0,z0 are volume XYZ coordinates from tumor_params_to_mcx_pattern
+                # Pos_z = z0 (volume Z offset), Pos_y = y0, Pos_x = x0
+                "Pos": [int(z0), int(y0), int(x0)],
                 "Dir": [0, 0, 1, "_NaN_"],
                 "Type": "pattern3d",
                 "Pattern": {
-                    "Nx": int(nx),
-                    "Ny": int(ny),
-                    "Nz": int(nz),
+                    # Nx, Ny, Nz match pattern shape (pnx, pny, pnz)
+                    "Nx": int(pnx),
+                    "Ny": int(pny),
+                    "Nz": int(pnz),
                     "Data": f"source-{sample_id}.bin",
                 },
-                "Param1": [int(nx), int(ny), int(nz)],
+                "Param1": [int(pnx), int(pny), int(pnz)],
             }
         },
     }

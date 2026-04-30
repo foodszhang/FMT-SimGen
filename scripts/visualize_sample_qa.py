@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_SIZE_MM
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, VOLUME_EXTENTS_MM
 
 OUT = Path("output/visualizations"); OUT.mkdir(parents=True, exist_ok=True)
 SHARED = Path("output/shared")
@@ -386,7 +386,7 @@ fig = plt.figure(figsize=(20, 5 * ((n_plot + 3) // 4)))
 step_sf = max(1, len(sf) // 3000)
 
 cx, cy, cz = VOLUME_CENTER_WORLD
-hx, hy, hz = TRUNK_SIZE_MM / 2.0
+hx, hy, hz = VOLUME_EXTENTS_MM / 2.0
 bbox_corners = np.array([
     [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
     [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

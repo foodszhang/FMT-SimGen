@@ -25,7 +25,7 @@ import yaml
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fmt_simgen.view_config import TurntableCamera
+from fmt_simgen.view_config import TurntableCamera, get_visible_surface_nodes_from_mcx_depth
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -40,6 +40,18 @@ def load_mesh(mesh_path: str) -> dict:
         "surface_faces": data["surface_faces"],
         "surface_node_indices": data["surface_node_indices"],
     }
+
+
+def load_mcx_volume(bin_path: Path, shape: tuple = (104, 200, 190)) -> np.ndarray:
+    """Load MCX volume from binary file and convert to XYZ order.
+    
+    The binary file is stored in ZYX order (MCX convention).
+    This function returns the volume in XYZ order for use with
+    project_volume_reference which expects [X, Y, Z] indexing.
+    """
+    vol = np.fromfile(bin_path, dtype=np.uint8)
+    volume_zyx = vol.reshape(shape)  # (Z, Y, X)
+    return volume_zyx.transpose(2, 1, 0)  # -> (X, Y, Z)
 
 
 def plot_visible_nodes_per_angle(
@@ -136,9 +148,52 @@ def main() -> None:
     logger.info(f"Dorsal region Z mean: {dorsal_z_mean:.2f} mm")
     logger.info(f"Dorsal normals Z component mean: {dorsal_normals[:, 2].mean():.3f}")
 
-    # Get visible nodes for all angles
-    logger.info("Computing visibility for all angles...")
-    all_visible = camera.get_all_visible_nodes_per_angle(nodes, normals)
+    # Load MCX volume for depth-based occlusion
+    mcx_vol_path = output_dir / "mcx_volume_trunk.bin"
+    if mcx_vol_path.exists():
+        logger.info(f"Loading MCX volume from {mcx_vol_path}")
+        mcx_volume = load_mcx_volume(mcx_vol_path)
+        logger.info(f"MCX volume shape: {mcx_volume.shape}")
+        use_mcx_depth = True
+    else:
+        logger.warning(f"MCX volume not found at {mcx_vol_path}, using normal-only visibility")
+        use_mcx_depth = False
+
+    # Load exterior faces if available (for accurate normal computation)
+    exterior_faces = surface_faces
+    trunk_mesh_path = output_dir / "digimouse_trunk_mesh.npz"
+    if trunk_mesh_path.exists():
+        data = np.load(trunk_mesh_path)
+        if "exterior_faces" in data:
+            exterior_faces = data["exterior_faces"]
+            logger.info(f"Using exterior_faces: {exterior_faces.shape}")
+
+    # Get visible nodes for all angles (with MCX depth occlusion)
+    logger.info("Computing visibility for all angles (with depth occlusion)...")
+    
+    volume_center_world = (19.0, 20.0, 10.4)
+    voxel_size = 0.2
+    
+    all_visible = {}
+    for angle in camera.angles:
+        if use_mcx_depth:
+            _, visible_mask, _ = get_visible_surface_nodes_from_mcx_depth(
+                node_coords=nodes,
+                surface_faces=surface_faces,
+                mask_xyz=mcx_volume,
+                angle_deg=angle,
+                voxel_size=voxel_size,
+                volume_center_world=volume_center_world,
+                epsilon=0.5,
+                exterior_faces=exterior_faces,
+            )
+            visible_global_idx = np.where(visible_mask)[0]
+            all_visible[angle] = visible_global_idx
+            logger.info(f"Angle {angle:4d}°: {len(visible_global_idx)} visible nodes (with depth)")
+        else:
+            visible_idx = camera.get_visible_surface_nodes(angle, nodes, normals)
+            all_visible[angle] = visible_idx
+            logger.info(f"Angle {angle:4d}°: {len(visible_idx)} visible nodes (normal-only)")
 
     # Compute statistics
     total_surface = len(surface_node_indices)

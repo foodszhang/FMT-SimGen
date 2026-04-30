@@ -67,8 +67,11 @@ fig = plt.figure(figsize=(16, 14))
 
 view_angles = [(20, 30), (20, 120), (20, -60), (20, -150)]
 import matplotlib.cm as cm
-cmap = cm.inferno
-norm = plt.Normalize(0, meas_b.max())
+from matplotlib.colors import LogNorm
+cmap = cm.turbo
+vmax = meas_b.max()
+vmin = 1e-4 * vmax
+norm = LogNorm(vmin=vmin, vmax=vmax)
 
 for ax_idx, (elev, azim) in enumerate(view_angles):
     ax = fig.add_subplot(2, 2, ax_idx + 1, projection='3d')
@@ -77,15 +80,21 @@ for ax_idx, (elev, azim) in enumerate(view_angles):
     from mpl_toolkits.mplot3d.art3d import Line3DCollection
     segs = []
     seg_colors = []
+    seg_alphas = []
     for i, (fi, fs, ft) in enumerate(surf_faces):
         xs = [surf_nodes[fi, 0], surf_nodes[fs, 0], surf_nodes[ft, 0], surf_nodes[fi, 0]]
         ys = [surf_nodes[fi, 1], surf_nodes[fs, 1], surf_nodes[ft, 1], surf_nodes[fi, 1]]
         zs = [surf_nodes[fi, 2], surf_nodes[fs, 2], surf_nodes[ft, 2], surf_nodes[fi, 2]]
         segs.append([list(x) for x in zip(xs, ys, zs)])
         seg_colors.append(tri_vals[i])
+        # Edge alpha: 0.3 floor + 0.7 * log-scale intensity
+        t = np.log10(max(tri_vals[i], vmin) / vmin) / np.log10(vmax / vmin)
+        seg_alphas.append(0.3 + 0.7 * np.clip(t, 0, 1))
 
-    lc = Line3DCollection(segs, cmap=cmap, norm=norm, linewidths=0.3, alpha=0.7)
+    lc = Line3DCollection(segs, cmap=cmap, norm=norm, linewidths=0.3)
     lc.set_array(np.array(seg_colors))
+    lc.set_clim(vmin=vmin, vmax=vmax)
+    lc.set_alpha(np.array(seg_alphas))
     ax.add_collection(lc)
     ax.set_xlim(surf_nodes[:, 0].min(), surf_nodes[:, 0].max())
     ax.set_ylim(surf_nodes[:, 1].min(), surf_nodes[:, 1].max())
@@ -103,8 +112,7 @@ for ax_idx, (elev, azim) in enumerate(view_angles):
     ax.view_init(elev=elev, azim=azim)
     ax.set_box_aspect(None, zoom=0.8)
 
-# Colorbar
-fig.colorbar(lc, ax=fig.axes, shrink=0.4, label='measurement_b', orientation='horizontal', pad=0.06)
+# Colorbar removed
 fig.suptitle(f'{sample_name} | {np.count_nonzero(meas_b>0)}/{len(meas_b)} nodes with signal | {len(foci)} foci', fontsize=12)
 plt.tight_layout()
 plt.savefig('output/visualization/sample_0000_mesh_3d.png', dpi=150, bbox_inches='tight')
@@ -127,12 +135,12 @@ for col, angle in enumerate(angles):
 
     # Row 0: all nodes scattered
     ax = axes2[0, col]
-    sc = ax.scatter(u_px, v_px, c=meas_b, cmap='inferno', s=5, alpha=0.8, vmin=0, vmax=meas_b.max())
+    sc = ax.scatter(u_px, v_px, c=meas_b, cmap='viridis', s=5, alpha=0.8, vmin=0, vmax=meas_b.max())
     ax.set_xlabel('u (px)')
     ax.set_ylabel('v (px)')
     ax.set_title(f'{angle}')
     ax.set_aspect('equal')
-    ax.invert_yaxis()
+    # No invert_yaxis — matches imshow origin='lower' (y=0 at bottom, y increases to top)
 
     # Row 1: gray dots = no signal, colored dots = signal
     ax = axes2[1, col]
@@ -144,13 +152,13 @@ for col, angle in enumerate(angles):
                   label=f'b=0 ({zero_mask.sum()})')
     if nonzero_mask.sum() > 0:
         ax.scatter(u_px[nonzero_mask], v_px[nonzero_mask],
-                  c=meas_b[nonzero_mask], cmap='inferno', s=5, alpha=0.8,
+                  c=meas_b[nonzero_mask], cmap='viridis', s=5, alpha=0.8,
                   vmin=0, vmax=meas_b.max(),
                   label=f'b>0 ({nonzero_mask.sum()})')
     ax.set_xlabel('u (px)')
     ax.set_ylabel('v (px)')
     ax.set_aspect('equal')
-    ax.invert_yaxis()
+    # No invert_yaxis
     ax.legend(fontsize=7, loc='upper right')
 
 fig2.text(0.01, 0.75, 'meas_b (all nodes)', fontsize=9, va='center', rotation=90)

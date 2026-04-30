@@ -13,17 +13,14 @@ from .view_contract import *
 
 __all__ = [
     # frame (from .frame_contract)
-    "TRUNK_OFFSET_ATLAS_MM",
-    "TRUNK_SIZE_MM",
     "VOXEL_SIZE_MM",
     "TRUNK_GRID_SHAPE",
+    "VOLUME_EXTENTS_MM",
     "VOLUME_CENTER_WORLD",
     "CAMERA_DISTANCE_MM",
     "FOV_MM",
     "DETECTOR_RESOLUTION",
     "ANGLES",
-    "atlas_corner_to_trunk",
-    "trunk_to_atlas_corner",
     "world_to_volume_voxel",
     "volume_voxel_to_world",
     "assert_in_trunk_bbox",
@@ -54,10 +51,9 @@ import json
 
 _ALL_CONSTANTS: dict = {
     # frame
-    "TRUNK_OFFSET_ATLAS_MM": TRUNK_OFFSET_ATLAS_MM.tolist(),
-    "TRUNK_SIZE_MM": TRUNK_SIZE_MM.tolist(),
     "VOXEL_SIZE_MM": VOXEL_SIZE_MM,
     "TRUNK_GRID_SHAPE": list(TRUNK_GRID_SHAPE),
+    "VOLUME_EXTENTS_MM": VOLUME_EXTENTS_MM.tolist(),
     "VOLUME_CENTER_WORLD": VOLUME_CENTER_WORLD.tolist(),
     "CAMERA_DISTANCE_MM": CAMERA_DISTANCE_MM,
     "FOV_MM": FOV_MM,

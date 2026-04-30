@@ -216,7 +216,6 @@ class TumorGenerator:
         tissue_labels=None,
         elements=None,
         organ_constraint_disabled: bool = False,
-        trunk_offset_mm=None,
         mcx_bbox_mm=None,  # (min_xyz, max_xyz) tuple of np.ndarray
         gt_offset_mm=None,  # gt_voxels offset in trunk-local mm
         gt_shape=None,  # gt_voxels shape (Nx, Ny, Nz)
@@ -254,9 +253,6 @@ class TumorGenerator:
         organ_constraint_disabled : bool, optional
             If True, skip organ boundary constraint check (use for verification
             datasets where the constraint is too restrictive for the mesh).
-        trunk_offset_mm : array-like, optional
-            Offset from atlas-corner to trunk-local world frame [0,34,0].
-            Used to convert foci.center from atlas mm to trunk-local mm.
         mcx_bbox_mm : tuple, optional
             (min_xyz, max_xyz) tuple of MCX volume bbox in trunk-local mm.
             Used to reject tumors outside MCX volume.
@@ -282,10 +278,6 @@ class TumorGenerator:
         self.tissue_labels = tissue_labels
         self.elements = elements
         self._organ_constraint_disabled = organ_constraint_disabled
-        self.trunk_offset_mm = (
-            np.asarray(trunk_offset_mm, dtype=np.float64)
-            if trunk_offset_mm is not None else np.zeros(3)
-        )
         self.mcx_bbox_mm = mcx_bbox_mm
         self.gt_offset_mm = (
             np.asarray(gt_offset_mm, dtype=np.float64)

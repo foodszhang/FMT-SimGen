@@ -12,7 +12,6 @@ sys.path.insert(0, '.')
 
 from fmt_simgen.atlas.digimouse import DigimouseAtlas
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
-from fmt_simgen.frame_contract import TRUNK_OFFSET_ATLAS_MM
 
 def run():
     atlas_path = "/home/foods/pro/mcx_simulation/ct_data/atlas_380x992x208.hdr"
@@ -35,7 +34,7 @@ def run():
         atlas=atlas,
         merged_voxel_volume=vol_xyz,
         voxel_size_mm=0.2,
-        trunk_offset_mm=TRUNK_OFFSET_ATLAS_MM.copy(),
+        trunk_offset_mm=np.zeros(3),
     )
 
     radius_bins = [

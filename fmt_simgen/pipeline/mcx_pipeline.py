@@ -23,7 +23,7 @@ from typing import Optional
 
 import numpy as np
 
-from fmt_simgen.frame_contract import TRUNK_OFFSET_ATLAS_MM, VOLUME_CENTER_WORLD, VOXEL_SIZE_MM
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, VOXEL_SIZE_MM
 from fmt_simgen.mcx_config import generate_mcx_config
 from fmt_simgen.mcx_projection import project_sample
 from fmt_simgen.mcx_runner import detect_mcx_executable, run_mcx_single
@@ -32,7 +32,7 @@ from fmt_simgen.view_config import TurntableCamera
 logger = logging.getLogger(__name__)
 
 
-def _discover_samples(samples_dir: Path) -> dict[str, dict]:
+def _discover_samples(samples_dir: Path, sample_names: list[str] | None = None) -> dict[str, dict]:
     """Discover sample status and return structured info.
 
     Returns
@@ -47,6 +47,8 @@ def _discover_samples(samples_dir: Path) -> dict[str, dict]:
         if not d.is_dir() or d.name.startswith("."):
             continue
         sid = d.name
+        if sample_names is not None and sid not in sample_names:
+            continue
         jnii_files = list(d.glob("*.jnii"))
         json_files = list(d.glob("*.json"))
         session_id = sid
@@ -139,6 +141,7 @@ def run_mcx_pipeline(
     projection_only: bool = False,
     max_workers: int = 1,
     no_skip: bool = False,
+    sample_names: list[str] | None = None,
 ) -> None:
     """Run the MCX (3D fluence simulation + projection) pipeline.
 
@@ -149,7 +152,7 @@ def run_mcx_pipeline(
     ----------
     config : dict
         Full configuration dictionary. Must contain:
-        - ``config["mcx"]``: MCX section (voxel_size_mm, trunk_offset_mm, etc.)
+        - ``config["mcx"]``: MCX section (voxel_size_mm, volume_shape, etc.)
         - ``config["view_config"]``: view config for TurntableCamera.
           If not present, falls back to ``output/shared/view_config.json``.
     samples_dir : Path
@@ -231,7 +234,7 @@ def run_mcx_pipeline(
             )
 
     # Discover samples
-    sample_info = _discover_samples(samples_dir)
+    sample_info = _discover_samples(samples_dir, sample_names)
     if not sample_info:
         raise FileNotFoundError(f"No sample directories found in {samples_dir}")
     logger.info("Found %d samples", len(sample_info))
@@ -274,7 +277,7 @@ def run_mcx_pipeline(
                 src_ok, src_fail, elapsed_src,
             )
             # Refresh sample info
-            sample_info = _discover_samples(samples_dir)
+            sample_info = _discover_samples(samples_dir, sample_names)
 
         # Phase 3m: MCX simulation for samples missing .jnii
         samples_needing_mcx = [
@@ -300,11 +303,11 @@ def run_mcx_pipeline(
                 mcx_ok, mcx_fail, elapsed_mcx,
             )
             # Refresh sample info after MCX simulation to pick up new .jnii files
-            sample_info = _discover_samples(samples_dir)
+            sample_info = _discover_samples(samples_dir, sample_names)
         else:
             logger.info("Phase 3m (MCX simulation): all .jnii files exist, skipping")
             # Refresh to confirm current state
-            sample_info = _discover_samples(samples_dir)
+            sample_info = _discover_samples(samples_dir, sample_names)
 
     # ── Phase 4m: Projection ─────────────────────────────────────────────────
     skip_existing = not no_skip
@@ -363,7 +366,7 @@ def run_mcx_pipeline(
         proj_results = []
 
     # Refresh sample info to reflect final state before summary
-    sample_info = _discover_samples(samples_dir)
+    sample_info = _discover_samples(samples_dir, sample_names)
 
     # ── Summary statistics ────────────────────────────────────────────────────
     logger.info("\n" + "=" * 60)

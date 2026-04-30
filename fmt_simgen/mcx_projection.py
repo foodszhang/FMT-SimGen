@@ -10,7 +10,7 @@ Coordinate system:
 - Projection places volume center at world origin by default.
   The volume_center_world parameter shifts this to the correct atlas position.
   For MCX trunk volume (after 2× downsample): volume_center_world=VOLUME_CENTER_WORLD
-  (derived from TRUNK_SIZE_MM / 2 = (19.0, 20.0, 10.4) mm).
+  (derived from VOLUME_EXTENTS_MM / 2 = (19.0, 20.0, 10.4) mm).
 - Camera at [0, 0, D] looking toward origin along -Z, with rotation around Y axis.
 """
 
@@ -74,7 +74,7 @@ def project_volume_reference(
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= VOLUME_EXTENTS_MM / 2).
         After centering, the volume corner is placed at this world position.
 
     Returns
@@ -226,7 +226,7 @@ def project_volume_reference_numpy(
         (width, height) in pixels.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= VOLUME_EXTENTS_MM / 2).
 
     Returns
     -------
@@ -350,7 +350,7 @@ def project_mcx_fluence(
         Camera model with configured angles and detector parameters.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= VOLUME_EXTENTS_MM / 2).
 
     Returns
     -------
@@ -399,7 +399,7 @@ def project_sample(
         If True (default), skip samples with existing proj.npz.
     volume_center_world : tuple[float, float, float]
         World coordinate (X, Y, Z) of the volume origin (corner voxel [0,0,0])
-        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
+        in trunk-local mm. Default = VOLUME_CENTER_WORLD (= VOLUME_EXTENTS_MM / 2).
 
     Returns
     -------

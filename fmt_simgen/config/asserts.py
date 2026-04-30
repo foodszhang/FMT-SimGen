@@ -9,10 +9,9 @@ from __future__ import annotations
 import numpy as np
 
 from fmt_simgen.frame_contract import (
-    TRUNK_OFFSET_ATLAS_MM,
-    TRUNK_SIZE_MM,
     VOXEL_SIZE_MM,
     TRUNK_GRID_SHAPE,
+    VOLUME_EXTENTS_MM,
     VOLUME_CENTER_WORLD,
     assert_in_trunk_bbox as _assert_in_trunk_bbox,
 )
@@ -24,13 +23,13 @@ class FrameContractViolation(AssertionError):
 
 
 def assert_vcw(vcw, label: str = "") -> None:
-    """Assert volume_center_world matches TRUNK_SIZE_MM / 2."""
+    """Assert volume_center_world matches VOLUME_EXTENTS_MM / 2."""
     vcw_arr = np.asarray(vcw)
     if not np.allclose(vcw_arr, VOLUME_CENTER_WORLD):
         raise FrameContractViolation(
             f"{label}: volume_center_world={vcw_arr.tolist()} "
             f"!= expected {VOLUME_CENTER_WORLD.tolist()} "
-            f"(TRUNK_SIZE_MM / 2 = {TRUNK_SIZE_MM.tolist()})"
+            f"(VOLUME_EXTENTS_MM / 2 = {VOLUME_EXTENTS_MM.tolist()})"
         )
 
 
@@ -56,7 +55,7 @@ def assert_focus_in_trunk(focus_center, tol_mm: float = 1.0) -> None:
     except AssertionError as e:
         raise FrameContractViolation(
             f"Focus center {center.flatten().tolist()} outside trunk bbox "
-            f"[0, {TRUNK_SIZE_MM[0]}], [0, {TRUNK_SIZE_MM[1]}], [0, {TRUNK_SIZE_MM[2]}] "
+            f"[0, {VOLUME_EXTENTS_MM[0]}], [0, {VOLUME_EXTENTS_MM[1]}], [0, {VOLUME_EXTENTS_MM[2]}] "
             f"(tol_mm={tol_mm})"
         ) from e
 

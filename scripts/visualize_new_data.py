@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_SIZE_MM
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, VOLUME_EXTENTS_MM
 
 # ── 1. Mesh 3D viewer (matplotlib) ───────────────────────────────────────────
 def mesh_html():
@@ -30,7 +30,7 @@ def mesh_html():
 
     # MCX bbox wireframe
     cx, cy, cz = VOLUME_CENTER_WORLD
-    hx, hy, hz = TRUNK_SIZE_MM / 2.0
+    hx, hy, hz = VOLUME_EXTENTS_MM / 2.0
     bbox_corners = np.array([
         [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
         [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

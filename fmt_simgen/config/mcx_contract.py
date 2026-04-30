@@ -2,7 +2,6 @@
 MCX contract: pure simulation constants.
 
 These values are fixed for the FMT-SimGen forward model.
-Do not put runtime-configured values here (e.g. trunk_offset_mm varies per experiment).
 """
 
 # Wavelength in nm (FMT typical)

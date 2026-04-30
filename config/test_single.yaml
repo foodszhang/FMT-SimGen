@@ -1,0 +1,13 @@
+# Test config for single sample comparison
+_base_: default.yaml
+
+dataset:
+  num_samples: 1
+  experiment_name: "test_single_v2"
+
+tumor:
+  num_foci_distribution:
+    1: 1.0
+  shapes: ["sphere"]
+  radius_range: [2.5, 2.5]
+  depth_range: [3.0, 4.0]

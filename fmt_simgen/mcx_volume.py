@@ -11,66 +11,9 @@ from typing import Any
 import numpy as np
 import yaml
 
-from fmt_simgen.frame_contract import TRUNK_OFFSET_ATLAS_MM, TRUNK_SIZE_MM
+from fmt_simgen.frame_contract import VOXEL_SIZE_MM
 
 logger = logging.getLogger(__name__)
-
-
-# Optical parameters from CC Task Packet (10 classes, labels 0-9)
-# mua: absorption coefficient [1/mm]
-# mus_prime: reduced scattering coefficient [1/mm]
-# g: anisotropy factor [-]
-# n: refractive index [-]
-TISSUE_PARAMETERS = [
-    {"label": 0, "name": "background",  "mua": 0.0,      "mus_prime": 0.0,       "g": 1.00, "n": 1.0},
-    {"label": 1, "name": "soft_tissue", "mua": 0.08697,  "mus_prime": 4.29071,   "g": 0.90, "n": 1.37},
-    {"label": 2, "name": "bone",        "mua": 0.04,     "mus_prime": 20.0,       "g": 0.90, "n": 1.37},
-    {"label": 3, "name": "brain",       "mua": 0.0648,   "mus_prime": 2.392,      "g": 0.90, "n": 1.37},
-    {"label": 4, "name": "heart",       "mua": 0.05881,  "mus_prime": 6.42581,    "g": 0.85, "n": 1.37},
-    {"label": 5, "name": "stomach",    "mua": 0.01304,  "mus_prime": 17.9615,    "g": 0.92, "n": 1.37},
-    {"label": 6, "name": "abdominal",  "mua": 0.06597,  "mus_prime": 16.09293,  "g": 0.85, "n": 1.37},
-    {"label": 7, "name": "liver",       "mua": 0.35182,  "mus_prime": 6.78066,   "g": 0.90, "n": 1.37},
-    {"label": 8, "name": "kidney",      "mua": 0.06597,  "mus_prime": 16.09293,  "g": 0.85, "n": 1.37},
-    {"label": 9, "name": "lung",       "mua": 0.19639,  "mus_prime": 36.52133,  "g": 0.94, "n": 1.37},
-]
-
-# Mapping from original Digimouse atlas labels (0-21) to CC Task Packet classes (0-9).
-# Original label -> CC class:
-#   0 -> 0 (background)
-#   1 -> 1 (skin -> soft_tissue)
-#   2 -> 2 (skeleton -> bone)
-#   3,4,5,6,7,8,10 -> 3 (brain regions -> brain)
-#   9 -> 4 (heart)
-#   11,12,13,14 -> 1 (muscle/fat/cartilage/tongue -> soft_tissue) [NOTE: merged with skin]
-#   15 -> 5 (stomach)
-#   16,17 -> 6 (spleen/pancreas -> abdominal)
-#   18 -> 7 (liver)
-#   19,20 -> 8 (kidney/adrenal -> kidney)
-#   21 -> 9 (lung)
-ORIGINAL_TO_CC_LABEL = {
-    0: 0,
-    1: 1,   # skin -> soft_tissue
-    2: 2,   # bone
-    3: 3,   # brain
-    4: 3,   # medulla -> brain
-    5: 3,   # cerebellum -> brain
-    6: 3,   # olfactory_bulb -> brain
-    7: 3,   # external_brain -> brain
-    8: 3,   # striatum -> brain
-    9: 4,   # heart
-    10: 3,  # brain_other -> brain
-    11: 1,  # muscle -> soft_tissue
-    12: 1,  # fat -> soft_tissue
-    13: 1,  # cartilage -> soft_tissue
-    14: 1,  # tongue -> soft_tissue
-    15: 5,  # stomach
-    16: 6,  # spleen -> abdominal
-    17: 6,  # pancreas -> abdominal
-    18: 7,  # liver
-    19: 8,  # kidney
-    20: 8,  # adrenal -> kidney
-    21: 9,  # lung
-}
 
 
 def mus_from_mus_prime(mus_prime: float, g: float) -> float:
@@ -85,26 +28,77 @@ def mus_from_mus_prime(mus_prime: float, g: float) -> float:
     return mus_prime / (1.0 - g)
 
 
-def build_material_list() -> list[dict[str, Any]]:
-    """Build MCX material list from CC Task Packet parameters.
+def build_material_list_from_config(
+    mcx_config: dict[str, Any],
+    physics_config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build MCX material list from config.
 
-    Converts mus_prime to mus using mus = mus_prime / (1 - g).
+    Reads tissue mapping and optical parameters from config, ensuring
+    consistency with DE pipeline.
+
+    Args:
+        mcx_config: MCX config section with tissue_mapping and tissue_classes.
+        physics_config: Physics config section with tissues optical parameters.
 
     Returns:
         List of material dicts with mua, mus, g, n, tag, name.
     """
+    tissue_classes = mcx_config.get("tissue_classes", {})
+    tissues_params = physics_config.get("tissues", {})
+
     materials = []
-    for tissue in TISSUE_PARAMETERS:
-        mus = mus_from_mus_prime(tissue["mus_prime"], tissue["g"])
-        materials.append({
-            "mua": tissue["mua"],
-            "mus": mus,
-            "g": tissue["g"],
-            "n": tissue["n"],
-            "tag": tissue["label"],
-            "name": tissue["name"],
-        })
+    for label_str, class_info in tissue_classes.items():
+        label = int(label_str)
+        name = class_info.get("name", f"tissue_{label}")
+        param_source = class_info.get("param_source", name)
+
+        if param_source not in tissues_params:
+            logger.warning(
+                f"MCX tissue {label} ({name}): param_source '{param_source}' "
+                f"not found in physics.tissues, using defaults"
+            )
+            params = {"mu_a": 0.0, "mu_s_prime": 0.0, "g": 0.9, "n": 1.37}
+        else:
+            params = tissues_params[param_source]
+
+        mu_a = params.get("mu_a", 0.0)
+        mu_s_prime = params.get("mu_s_prime", params.get("mu_sp", 0.0))
+        g = params.get("g", 0.9)
+        n = params.get("n", 1.37)
+
+        mus = mus_from_mus_prime(mu_s_prime, g)
+
+        materials.append(
+            {
+                "mua": mu_a,
+                "mus": mus,
+                "g": g,
+                "n": n,
+                "tag": label,
+                "name": name,
+            }
+        )
+
+        logger.debug(
+            f"MCX material {label} ({name}): "
+            f"mu_a={mu_a:.5f}, mu_s'={mu_s_prime:.5f}, mu_s={mus:.5f}, g={g}, n={n}"
+        )
+
     return materials
+
+
+def get_tissue_mapping(mcx_config: dict[str, Any]) -> dict[int, int]:
+    """Get tissue mapping from config.
+
+    Args:
+        mcx_config: MCX config section with tissue_mapping.
+
+    Returns:
+        Dict mapping original label to MCX label.
+    """
+    mapping = mcx_config.get("tissue_mapping", {})
+    return {int(k): int(v) for k, v in mapping.items()}
 
 
 def load_atlas_labels(atlas_path: str | Path) -> tuple[np.ndarray, float]:
@@ -143,7 +137,9 @@ def load_atlas_labels(atlas_path: str | Path) -> tuple[np.ndarray, float]:
     labels = atlas_data[label_key]
     voxel_size = float(atlas_data["voxel_size"])
 
-    logger.info(f"Using label key '{label_key}', shape: {labels.shape}, dtype: {labels.dtype}")
+    logger.info(
+        f"Using label key '{label_key}', shape: {labels.shape}, dtype: {labels.dtype}"
+    )
     logger.info(f"Voxel size: {voxel_size} mm")
 
     return labels, voxel_size
@@ -172,6 +168,7 @@ def crop_and_downsample(
 
     # Majority-vote 2x2x2 block downsample
     from scipy.stats import mode
+
     bs = downsample_factor
     shape = cropped.shape
     new_shape = (shape[0] // bs, bs, shape[1] // bs, bs, shape[2] // bs, bs)
@@ -188,18 +185,18 @@ def prepare_mcx_volume(
     atlas_path: str | Path,
     config: dict[str, Any],
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Prepare MCX volume from Digimouse atlas.
+    """Prepare MCX volume from atlas.
 
     1. Load atlas and detect label key
-    2. Map original 22 labels to CC Task Packet 10 classes (0-9)
-    3. Crop torso region (Y ∈ [y_start, y_end])
+    2. Map original labels to MCX classes (config-defined)
+    3. Crop torso region (Y ∈ [y_start, y_end] from config)
     4. Downsample 2x
     5. Transpose to ZYX order for MCX
-    6. Generate material list
+    6. Generate material list from physics config
 
     Args:
         atlas_path: Path to output/shared/atlas_full.npz.
-        config: Config dict with mcx section (trunk_crop, downsample_factor).
+        config: Full config dict with mcx and physics sections.
 
     Returns:
         Tuple of (volume_zyx, material_list).
@@ -207,61 +204,62 @@ def prepare_mcx_volume(
         material_list is list of dicts with mua, mus, g, n, tag, name.
     """
     mcx_config = config.get("mcx", {})
+    physics_config = config.get("physics", {})
     downsample_factor = mcx_config.get("downsample_factor", 2)
 
-    # Load atlas
     labels, voxel_size = load_atlas_labels(atlas_path)
 
-    # Y crop from TRUNK_OFFSET_ATLAS_MM (single source of truth)
-    y_start = int(np.round(TRUNK_OFFSET_ATLAS_MM[1] / voxel_size))
-    y_end = y_start + int(np.round(TRUNK_SIZE_MM[1] / voxel_size))
+    # Y crop parameters from config (pixel indices at original voxel size)
+    # For Digimouse: y_start=340, y_end=740 at 0.1mm → physical Y=[34,74]mm
+    y_start = int(mcx_config.get("trunk_crop_y_start", 340))
+    y_end = int(mcx_config.get("trunk_crop_y_end", 740))
     original_shape = labels.shape
     logger.info(f"Original atlas shape: {original_shape}")
 
-    # Map original labels to CC Task Packet classes (0-9)
-    labels_cc = np.zeros_like(labels)
-    for orig_label, cc_label in ORIGINAL_TO_CC_LABEL.items():
-        labels_cc[labels == orig_label] = cc_label
+    tissue_mapping = get_tissue_mapping(mcx_config)
+    num_tissues = mcx_config.get("num_tissues", 10)
+
+    labels_mcx = np.zeros_like(labels)
+    for orig_label, mcx_label in tissue_mapping.items():
+        labels_mcx[labels == orig_label] = mcx_label
 
     unique_orig = np.unique(labels)
-    unique_cc = np.unique(labels_cc)
+    unique_mcx = np.unique(labels_mcx)
     logger.info(f"Original label range: {unique_orig.min()} - {unique_orig.max()}")
-    logger.info(f"CC class range after mapping: {unique_cc.min()} - {unique_cc.max()}")
+    logger.info(
+        f"MCX class range after mapping: {unique_mcx.min()} - {unique_mcx.max()}"
+    )
 
-    # Crop and downsample
-    volume_xyz = crop_and_downsample(labels_cc, y_start, y_end, downsample_factor)
+    volume_xyz = crop_and_downsample(labels_mcx, y_start, y_end, downsample_factor)
 
-    # Transpose to ZYX order for MCX
     volume_zyx = volume_xyz.transpose(2, 1, 0)
     logger.info(f"MCX volume shape (ZYX): {volume_zyx.shape}")
 
-    # Verify label range
     unique_labels = np.unique(volume_zyx)
     max_label = int(unique_labels.max())
     logger.info(f"Label range in final volume: {unique_labels.min()} - {max_label}")
 
-    if max_label > 9:
+    tissue_classes = mcx_config.get("tissue_classes", {})
+    if max_label >= num_tissues:
         logger.error(
-            f"Found label {max_label} which exceeds expected range 0-9. "
-            f"Material list only has entries for 0-9."
+            f"Found label {max_label} which exceeds expected range 0-{num_tissues - 1}. "
+            f"Material list only has entries for 0-{num_tissues - 1}."
         )
-        raise ValueError(f"Label {max_label} out of range 0-9 after mapping")
+        raise ValueError(
+            f"Label {max_label} out of range 0-{num_tissues - 1} after mapping"
+        )
 
-    # Warn about small labels
     for label in unique_labels:
         count = int((volume_zyx == label).sum())
         if count < 100:
-            tissue_name = next(
-                (t["name"] for t in TISSUE_PARAMETERS if t["label"] == label),
-                "unknown"
-            )
+            class_info = tissue_classes.get(str(label), tissue_classes.get(label, {}))
+            tissue_name = class_info.get("name", f"tissue_{label}")
             logger.warning(
                 f"Label {label} ({tissue_name}) has only {count} voxels after downsampling. "
                 f"It may have largely disappeared."
             )
 
-    # Build material list
-    material_list = build_material_list()
+    material_list = build_material_list_from_config(mcx_config, physics_config)
 
     return volume_zyx, material_list
 
@@ -327,12 +325,20 @@ def print_volume_statistics(
     logger.info("=" * 60)
     logger.info(f"Original atlas shape (XYZ): {original_shape}")
     logger.info(f"Original voxel size: {voxel_size} mm")
-    logger.info(f"Y crop: [{y_start}, {y_end}) -> [{y_start * voxel_size}, {y_end * voxel_size}) mm")
-    logger.info(f"Downsample factor: {downsample_factor} -> voxel size {ds_voxel_size} mm")
-    logger.info(f"Downsampled shape (XYZ): [{zyx_shape[2]}, {zyx_shape[1]}, {zyx_shape[0]}]")
+    logger.info(
+        f"Y crop: [{y_start}, {y_end}) -> [{y_start * voxel_size}, {y_end * voxel_size}) mm"
+    )
+    logger.info(
+        f"Downsample factor: {downsample_factor} -> voxel size {ds_voxel_size} mm"
+    )
+    logger.info(
+        f"Downsampled shape (XYZ): [{zyx_shape[2]}, {zyx_shape[1]}, {zyx_shape[0]}]"
+    )
     logger.info(f"MCX Dim (ZYX): {zyx_shape}")
-    logger.info(f"Physical dimensions: X={zyx_shape[2] * ds_voxel_size}mm, "
-                f"Y={zyx_shape[1] * ds_voxel_size}mm, Z={zyx_shape[0] * ds_voxel_size}mm")
+    logger.info(
+        f"Physical dimensions: X={zyx_shape[2] * ds_voxel_size}mm, "
+        f"Y={zyx_shape[1] * ds_voxel_size}mm, Z={zyx_shape[0] * ds_voxel_size}mm"
+    )
     logger.info(f"Trunk offset mm: [0, {y_start * voxel_size}, 0]")
     logger.info(f"Total voxels: {volume_zyx.size:,}")
     logger.info(f"Valid (non-zero) voxels: {(volume_zyx > 0).sum():,}")
@@ -348,6 +354,8 @@ def print_volume_statistics(
         count = int((volume_zyx == label).sum())
         fraction = count / volume_zyx.size * 100
         name = label_to_name.get(label, "unknown")
-        logger.info(f"  Label {label:2d} ({name:12s}): {count:8,} voxels ({fraction:6.2f}%)")
+        logger.info(
+            f"  Label {label:2d} ({name:12s}): {count:8,} voxels ({fraction:6.2f}%)"
+        )
 
     logger.info("=" * 60)

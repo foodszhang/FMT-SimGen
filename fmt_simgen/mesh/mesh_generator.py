@@ -29,6 +29,7 @@ class MeshData:
     tissue_labels: np.ndarray
     surface_faces: np.ndarray
     surface_node_indices: np.ndarray
+    interface_faces: np.ndarray = None  # Optional: interior organ/interface faces
 
 
 @dataclass

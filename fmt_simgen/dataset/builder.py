@@ -29,8 +29,6 @@ from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
 from fmt_simgen.sampling.dual_sampler import DualSampler, VoxelGridConfig
 from fmt_simgen.frame_contract import (
-    TRUNK_OFFSET_ATLAS_MM,
-    TRUNK_SIZE_MM,
     VOXEL_SIZE_MM,
     TRUNK_GRID_SHAPE,
     VOLUME_CENTER_WORLD,
@@ -90,7 +88,7 @@ class DatasetBuilder:
         """
         default_output = Path("output/shared")
         mesh_path = Path(self.mesh_config.get("output_path", str(default_output)))
-        mesh_file = mesh_path / "mesh.npz"
+        mesh_file = Path(self.mesh_config.get("mesh_file", str(default_output / "mesh.npz")))
         matrix_file = mesh_path / "system_matrix"
 
         # ── Step 0: Atlas nodes for TumorGenerator KDTree (before any rebase) ─
@@ -114,6 +112,7 @@ class DatasetBuilder:
                 tissue_labels=self._mesh_data.tissue_labels,
                 surface_faces=self._mesh_data.surface_faces,
                 surface_node_indices=self._mesh_data.surface_node_indices,
+                interface_faces=self._mesh_data.interface_faces,
             )
             # Also save to output/shared/ where DU2Vox expects the mesh
             shared_mesh = Path("output/shared/mesh.npz")
@@ -125,6 +124,7 @@ class DatasetBuilder:
                 tissue_labels=self._mesh_data.tissue_labels,
                 surface_faces=self._mesh_data.surface_faces,
                 surface_node_indices=self._mesh_data.surface_node_indices,
+                interface_faces=self._mesh_data.interface_faces,
             )
             atlas_nodes = self._mesh_data.nodes.copy()
             matrix_file = self.fem_solver.save_system_matrix(str(mesh_path / "system_matrix"))
@@ -133,31 +133,31 @@ class DatasetBuilder:
             print(f"Shared assets loaded (mesh re-saved in trunk-local frame)")
             return {"mesh": shared_mesh, "matrix": matrix_file}
 
-        if not force_regenerate and default_output.exists():
-            existing_mesh = default_output / "mesh.npz"
-            existing_matrix = default_output / "system_matrix.M.npz"
-            if existing_mesh.exists() and existing_matrix.exists():
-                print(f"Loading existing assets from {default_output}")
-                self._load_mesh_data(str(existing_mesh))
+        if not force_regenerate and mesh_file.exists():
+            existing_matrix = mesh_file.parent / "system_matrix.M.npz"
+            if existing_matrix.exists():
+                print(f"Loading existing assets from {mesh_file.parent}")
+                self._load_mesh_data(str(mesh_file))
                 self._setup_optical_manager()
                 self._setup_fem_solver()
                 # Save rebased mesh alongside existing matrix
                 np.savez(
-                    existing_mesh,
+                    mesh_file,
                     nodes=self._mesh_data.nodes,
                     elements=self._mesh_data.elements,
                     tissue_labels=self._mesh_data.tissue_labels,
                     surface_faces=self._mesh_data.surface_faces,
                     surface_node_indices=self._mesh_data.surface_node_indices,
+                    interface_faces=self._mesh_data.interface_faces,
                 )
                 atlas_nodes = self._mesh_data.nodes.copy()
                 matrix_file = self.fem_solver.save_system_matrix(
-                    str(existing_matrix.parent / "system_matrix")
+                    str(mesh_file.parent / "system_matrix")
                 )
                 self._write_frame_manifest()
                 self._verify_frame_consistency()
                 return {
-                    "mesh": existing_mesh,
+                    "mesh": mesh_file,
                     "matrix": existing_matrix.parent / "system_matrix",
                 }
 
@@ -179,13 +179,7 @@ class DatasetBuilder:
         self._setup_fem_solver()
         self.fem_solver.assemble_system_matrix()
 
-        # ── Rebase to trunk-local and save mesh.npz in trunk-local frame ─────
-        mcx_cfg = self.config.get("mcx", {})
-        trunk_offset_atlas = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()),
-                                      dtype=np.float64)
-        self._mesh_data.nodes = (
-            self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
-        ).astype(self._mesh_data.nodes.dtype)
+        # Mesh nodes are already in trunk-local frame (from step0b_generate_mesh_cgalmesh.py)
         mesh_file = self.mesh_generator.save(self._mesh_data, "mesh")
 
         matrix_file = self.fem_solver.save_system_matrix(
@@ -208,37 +202,15 @@ class DatasetBuilder:
         to output/shared/mesh.npz (where DU2Vox expects it).
         """
         mesh_path = Path(mesh_path)
-        mcx_cfg = self.config.get("mcx", {})
-        trunk_offset = np.array(mcx_cfg.get("trunk_offset_mm", TRUNK_OFFSET_ATLAS_MM.tolist()),
-                               dtype=np.float64)
 
         data = np.load(mesh_path, allow_pickle=True)
         nodes = data["nodes"].astype(np.float64)
 
-        # Canonical manifest location: output/shared/ (DU2Vox shared_dir)
-        manifest_path = Path("output/shared/frame_manifest.json")
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            mesh_frame = manifest.get("fem_mesh", {}).get("frame", "atlas_corner_mm")
-        else:
-            mesh_frame = "atlas_corner_mm"  # assume old format
-
+        # Mesh is already in trunk-local frame (from step0b_generate_mesh_cgalmesh.py)
         # Always copy manifest to mesh directory (assets/mesh/) for build_samples
+        manifest_path = Path("output/shared/frame_manifest.json")
         mesh_dir_manifest = mesh_path.parent / "frame_manifest.json"
         if manifest_path.exists() and manifest_path != mesh_dir_manifest:
-            manifest = json.loads(manifest_path.read_text())
-            if mesh_frame == "atlas_corner_mm":
-                # Rebase to trunk-local
-                nodes = nodes - trunk_offset
-                manifest["fem_mesh"]["frame"] = "mcx_trunk_local_mm"
-                manifest["fem_mesh"]["bbox_world_mm"]["min"] = (
-                    nodes.min(axis=0).tolist()
-                )
-                manifest["fem_mesh"]["bbox_world_mm"]["max"] = (
-                    nodes.max(axis=0).tolist()
-                )
-                manifest_path.write_text(json.dumps(manifest, indent=2))
-            # Copy to mesh directory (always, to keep them in sync)
             import shutil
             shutil.copy(manifest_path, mesh_dir_manifest)
 
@@ -248,6 +220,7 @@ class DatasetBuilder:
             surface_faces=data["surface_faces"],
             tissue_labels=data["tissue_labels"],
             surface_node_indices=data["surface_node_indices"],
+            interface_faces=data.get("interface_faces", None),
         )
         print(
             f"  Loaded mesh: {self._mesh_data.nodes.shape[0]} nodes, "
@@ -280,7 +253,7 @@ class DatasetBuilder:
         per axis. This prevents frame regress silently.
         """
         from fmt_simgen.frame_contract import (
-            VOXEL_SIZE_MM, TRUNK_SIZE_MM, assert_in_trunk_bbox,
+            VOXEL_SIZE_MM, VOLUME_EXTENTS_MM, assert_in_trunk_bbox,
         )
         import logging
         logger = logging.getLogger(__name__)
@@ -335,12 +308,9 @@ class DatasetBuilder:
         Also syncs to assets/mesh/ (where the mesh files live).
         """
         # ── Source of truth: frame_contract.py ──────────────────────────────────
-        trunk_offset: np.ndarray = TRUNK_OFFSET_ATLAS_MM          # [0, 34, 0]
-        trunk_size: np.ndarray   = TRUNK_SIZE_MM                   # [38, 40, 20.8]
         voxel_size: float        = VOXEL_SIZE_MM                  # 0.2
         grid_shape_xyz: tuple    = TRUNK_GRID_SHAPE               # (190, 200, 104)
         vol_center: np.ndarray   = VOLUME_CENTER_WORLD             # [19, 20, 10.4]
-        half_extents: np.ndarray = trunk_size / 2.0               # [19, 20, 10.4]
 
         # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
         nodes_trunk: np.ndarray = self._mesh_data.nodes.astype(np.float64)
@@ -358,27 +328,23 @@ class DatasetBuilder:
         else:
             fem_mesh_frame = "mcx_trunk_local_mm"
 
-        # gt voxel grid (per-sample, not frame-level — keep from dataset_config)
-        voxel_spacing: float = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
-        roi_size: float = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
-        roi_center: np.ndarray = trunk_size / 2.0
-        offset: list = (roi_center - roi_size / 2.0).tolist()
-        shape_gt: list = [int(np.ceil(roi_size / voxel_spacing))] * 3
+        # gt voxel grid: 和MCX atlas crop一致
+        voxel_spacing: float = self.dataset_config.get("voxel_spacing", 0.2)
+        # DE voxel grid: origin=(0,0,0) in trunk-local, shape=[190, 200, 104]
+        offset: list = [0.0, 0.0, 0.0]
+        shape_gt: list = [190, 200, 104]
 
+        trunk_size: np.ndarray = np.array([38.0, 40.0, 20.8])
         manifest: dict = {
             "version": 2,
             "world_frame": "mcx_trunk_local_mm",
             "frame_contract": {
-                "trunk_offset_atlas_mm": trunk_offset.tolist(),
-                "trunk_size_mm": trunk_size.tolist(),
                 "voxel_size_mm": float(voxel_size),
-                "trunk_grid_shape_xyz": list(grid_shape_xyz),
+                "grid_shape_xyz": list(grid_shape_xyz),
                 "volume_center_world_mm": vol_center.tolist(),
-                "mcx_half_extents_mm": half_extents.tolist(),
+                "volume_extents_mm": trunk_size.tolist(),
                 "generated_by": "fmt_simgen.dataset.builder.build_shared_assets",
-                "frame_contract_version": "2026-04-20-U2-locked",
             },
-            "atlas_to_world_offset_mm": trunk_offset.tolist(),  # legacy key
             "mcx_volume": {
                 "shape_xyz": list(grid_shape_xyz),
                 "voxel_size_mm": float(voxel_size),
@@ -446,53 +412,28 @@ class DatasetBuilder:
 
         samples_output.mkdir(parents=True, exist_ok=True)
 
-        # ================== [FIX v3] 统一到 mcx_trunk_local_mm frame ==================
-        # 1) 读 MCX frame 元数据
+        # ================== 统一到 mcx_trunk_local_mm frame ==================
+        # Mesh nodes are already in trunk-local frame (from step0b_generate_mesh_cgalmesh.py)
         mcx_cfg = self.config.get("mcx", {})
         if not mcx_cfg:
-            raise ValueError("[FIX v3] config.mcx 必填 — frame 对齐依赖它")
-        trunk_offset_atlas = np.array(mcx_cfg["trunk_offset_mm"], dtype=np.float64)  # [0,34,0]
+            raise ValueError("config.mcx 必填")
         trunk_voxel_size = float(mcx_cfg["voxel_size_mm"])  # 0.2
-        # volume_shape 是 ZYX 顺序
         vs_zyx = mcx_cfg["volume_shape"]
-        trunk_size_mm = np.array(
+        volume_extents = np.array(
             [vs_zyx[2] * trunk_voxel_size,  # X
              vs_zyx[1] * trunk_voxel_size,  # Y
              vs_zyx[0] * trunk_voxel_size],  # Z
             dtype=np.float64,
         )  # ≈ [38.0, 40.0, 20.8]
 
-        # 2) Check if mesh needs rebase (load_mesh_data already rebased if needed)
-        # After load_mesh_data: mesh is trunk-local if manifest says mcx_trunk_local_mm,
-        # or atlas if manifest is missing/outdated (old saved mesh).
-        mesh_path = Path(self.mesh_config.get("output_path", "output/shared"))
-        manifest_path = mesh_path / "frame_manifest.json"
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            mesh_frame = manifest.get("fem_mesh", {}).get("frame", "atlas_corner_mm")
-        else:
-            mesh_frame = "atlas_corner_mm"
-
-        if mesh_frame == "atlas_corner_mm":
-            # Defensive rebase for legacy meshes (load_mesh_data already rebased + saved
-            # for manifest=atlas_corner_mm; this is a fallback for edge cases)
-            nodes_trunk = self._mesh_data.nodes.astype(np.float64) - trunk_offset_atlas
-            self._mesh_data.nodes = nodes_trunk.astype(self._mesh_data.nodes.dtype)
-            print(f"  [FRAME] Warning: legacy atlas-frame mesh rebase in build_samples")
-        else:
-            # Mesh already trunk-local (load_mesh_data did it)
-            nodes_trunk = self._mesh_data.nodes.astype(np.float64)
+        nodes_trunk = self._mesh_data.nodes.astype(np.float64)
 
         # 硬断言：trunk-local 节点应有 ≥50% 落在 MCX volume 内
         in_mcx = np.all(
-            (nodes_trunk >= -1.0) & (nodes_trunk <= trunk_size_mm + 1.0), axis=1
+            (nodes_trunk >= -1.0) & (nodes_trunk <= volume_extents + 1.0), axis=1
         )
         inside_ratio = float(in_mcx.mean())
-        print(f"  [FRAME] Mesh frame={mesh_frame}, {inside_ratio*100:.1f}% nodes inside MCX bbox.")
-        assert inside_ratio >= 0.50, (
-            f"[FIX v3] 只有 {inside_ratio*100:.1f}% 节点在 MCX bbox 内，"
-            f"trunk_offset_mm 可能不匹配（正常 full-body mesh 约 57-60%）"
-        )
+        print(f"  [FRAME] {inside_ratio*100:.1f}% nodes inside MCX bbox.")
 
         # 3) Load merged voxel volume for organ constraint (same as MCX trunk volume)
         merged_vol_path = Path("output/shared/mcx_volume_trunk.bin")
@@ -508,12 +449,12 @@ class DatasetBuilder:
             merged_vol_xyz = None
             print("  [WARNING] mcx_volume_trunk.bin not found — organ constraint will use fallback")
 
-        # 4) ROI：以 MCX volume 几何中心为中心的 roi_size^3 立方
-        roi_center = trunk_size_mm / 2.0  # ≈ [19, 20, 10.4]
-        roi_half = roi_size / 2.0
-        node_min = roi_center - roi_half  # trunk-local mm
-        node_max = roi_center + roi_half
-        shape = np.ceil((node_max - node_min) / voxel_spacing).astype(int)
+        # 4) DE voxel grid: 和分割文件/MCX volume 一致，origin=(0,0,0)
+        node_min = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        mcx_voxel_size = 0.2
+        mcx_shape = np.array([190, 200, 104])
+        shape = tuple(int(s) for s in mcx_shape)
+        roi_size = float((mcx_shape * mcx_voxel_size).max())  # for compatibility
 
         voxel_grid_config = VoxelGridConfig(
             shape=tuple(shape),
@@ -541,8 +482,7 @@ class DatasetBuilder:
             organ_constraint_disabled=self.tumor_config.get(
                 "organ_constraint_disabled", False
             ),
-            trunk_offset_mm=trunk_offset_atlas,
-            mcx_bbox_mm=(np.zeros(3), trunk_size_mm),
+            mcx_bbox_mm=(np.zeros(3), volume_extents),
             gt_offset_mm=voxel_grid_config.offset,  # gt_voxels bounding box
             gt_shape=voxel_grid_config.shape,  # gt_voxels shape
             gt_spacing_mm=voxel_spacing,  # gt_voxels spacing

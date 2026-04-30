@@ -12,37 +12,34 @@ Then regenerates output/shared/mcx_volume_trunk.bin from the same array.
 Downsample: majority-vote (not mean) — labels are discrete classes.
 Atlas is 0.1mm, trunk is 0.2mm → 2×2×2 block mode.
 """
+
 import sys
 from pathlib import Path
 import numpy as np
 import logging
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).parent.parent
 ATLAS_PATH = REPO_ROOT / "output/shared/atlas_full.npz"
 TRUNK_VOL_PATH = REPO_ROOT / "output/shared/trunk_volume.npz"
 MCX_BIN_PATH = REPO_ROOT / "output/shared/mcx_volume_trunk.bin"
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-VS_ATLAS = 0.1   # mm, atlas voxel size
-VS_TRUNK = 0.2   # mm, trunk/MCX voxel size (2× downsample)
+VS_ATLAS = 0.1
+VS_TRUNK = 0.2
 
 from fmt_simgen.frame_contract import (
-    TRUNK_OFFSET_ATLAS_MM,
-    TRUNK_SIZE_MM,
     TRUNK_GRID_SHAPE,
     VOXEL_SIZE_MM,
 )
-from fmt_simgen.mcx_volume import ORIGINAL_TO_CC_LABEL
-
-assert VS_TRUNK == VOXEL_SIZE_MM  # sanity check
+from fmt_simgen.mcx_volume import get_tissue_mapping
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def majority_vote_downsample(vol: np.ndarray, block_size: int = 2) -> np.ndarray:
     """Downsample by block-wise majority vote.
@@ -53,6 +50,7 @@ def majority_vote_downsample(vol: np.ndarray, block_size: int = 2) -> np.ndarray
     Returns downsampled array of shape (X//bs, Y//bs, Z//bs).
     """
     from scipy.stats import mode
+
     shape = vol.shape
     bs = block_size
 
@@ -71,22 +69,26 @@ def majority_vote_downsample(vol: np.ndarray, block_size: int = 2) -> np.ndarray
 
 def crop_and_downsample(atlas_labels: np.ndarray) -> np.ndarray:
     """Crop atlas to trunk bbox, then majority-vote downsample to 0.2mm."""
-    offset = TRUNK_OFFSET_ATLAS_MM  # [0, 34, 0] in atlas mm
+    # Trunk crop offset in atlas mm: Y=[30,70]mm → y_start=300 voxels at 0.1mm
+    # Y offset: 340 voxels × 0.1mm/voxel = 34mm
+    trunk_offset_mm = [0.0, 34.0, 0.0]
+    # Trunk physical size in mm: (38.0, 40.0, 20.8)
+    trunk_size_mm = [38.0, 40.0, 20.8]
 
     # atlas voxels: shape (380, 992, 208) @ 0.1mm
     # Crop window in atlas voxel indices
-    x0 = int(np.round(offset[0] / VS_ATLAS))
-    y0 = int(np.round(offset[1] / VS_ATLAS))
-    z0 = int(np.round(offset[2] / VS_ATLAS))
+    x0 = int(np.round(trunk_offset_mm[0] / VS_ATLAS))
+    y0 = int(np.round(trunk_offset_mm[1] / VS_ATLAS))
+    z0 = int(np.round(trunk_offset_mm[2] / VS_ATLAS))
 
-    nx_out = int(np.round(TRUNK_SIZE_MM[0] / VS_TRUNK))   # 190
-    ny_out = int(np.round(TRUNK_SIZE_MM[1] / VS_TRUNK))   # 200
-    nz_out = int(np.round(TRUNK_SIZE_MM[2] / VS_TRUNK))   # 104
+    nx_out = int(np.round(trunk_size_mm[0] / VS_TRUNK))  # 190
+    ny_out = int(np.round(trunk_size_mm[1] / VS_TRUNK))  # 200
+    nz_out = int(np.round(trunk_size_mm[2] / VS_TRUNK))  # 104
 
     # Atlas crop size in voxels at atlas resolution
-    nx_at = int(np.round(TRUNK_SIZE_MM[0] / VS_ATLAS))   # 380
-    ny_at = int(np.round(TRUNK_SIZE_MM[1] / VS_ATLAS))   # 400
-    nz_at = int(np.round(TRUNK_SIZE_MM[2] / VS_ATLAS))   # 208
+    nx_at = int(np.round(trunk_size_mm[0] / VS_ATLAS))  # 380
+    ny_at = int(np.round(trunk_size_mm[1] / VS_ATLAS))  # 400
+    nz_at = int(np.round(trunk_size_mm[2] / VS_ATLAS))  # 208
 
     atlas_crop = atlas_labels[
         x0 : x0 + nx_at,
@@ -106,49 +108,51 @@ def crop_and_downsample(atlas_labels: np.ndarray) -> np.ndarray:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+
 def main():
     logger.info("=== U3: Build Canonical Trunk Volume ===")
 
-    # Load atlas
+    config_path = REPO_ROOT / "config" / "default.yaml"
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    mcx_config = config.get("mcx", {})
+    tissue_mapping = get_tissue_mapping(mcx_config)
+
     af = np.load(ATLAS_PATH, allow_pickle=True)
     atlas_labels = af["original_labels"]
     logger.info(f"Atlas: shape={atlas_labels.shape}, dtype={atlas_labels.dtype}")
 
-    # Crop + downsample
     trunk = crop_and_downsample(atlas_labels)
 
-    # Apply label mapping: Digimouse original labels → CC Task Packet classes (0-9)
-    trunk_cc = np.zeros_like(trunk)
-    for orig_label, cc_label in ORIGINAL_TO_CC_LABEL.items():
-        trunk_cc[trunk == orig_label] = cc_label
-    trunk = trunk_cc
+    trunk_mcx = np.zeros_like(trunk)
+    for orig_label, mcx_label in tissue_mapping.items():
+        trunk_mcx[trunk == orig_label] = mcx_label
+    trunk = trunk_mcx
 
-    # Save trunk_volume.npz
     np.savez_compressed(
         TRUNK_VOL_PATH,
         trunk_volume=trunk,
         voxel_size_mm=VS_TRUNK,
-        trunk_offset_atlas_mm=TRUNK_OFFSET_ATLAS_MM,
-        trunk_size_mm=TRUNK_SIZE_MM,
+        trunk_offset_atlas_mm=np.array(trunk_offset_mm),
+        trunk_size_mm=np.array(trunk_size_mm),
         trunk_grid_shape=TRUNK_GRID_SHAPE,
     )
     logger.info(f"Saved {TRUNK_VOL_PATH}: shape={trunk.shape}")
 
-    # ── Regenerate mcx_volume_trunk.bin from same array ─────────────────────
-    # mcx_volume_trunk.bin stores (Z, Y, X) = shape (104, 200, 190)
-    trunk_zyx = trunk.transpose(2, 1, 0)  # XYZ → ZYX
+    trunk_zyx = trunk.transpose(2, 1, 0)
     assert trunk_zyx.shape == (104, 200, 190), f"ZYX shape mismatch: {trunk_zyx.shape}"
     trunk_zyx.tofile(MCX_BIN_PATH)
     logger.info(f"Saved {MCX_BIN_PATH}: shape={trunk_zyx.shape} (ZYX)")
 
-    # ── Per-label stats ─────────────────────────────────────────────────────
     logger.info("\n=== Per-label voxel counts in trunk_volume ===")
     for lb in sorted(np.unique(trunk)):
         count = (trunk == lb).sum()
         total = (atlas_labels == lb).sum()
         frac = count / total if total > 0 else 0
         atlas_frac_in_window = frac  # same metric as U2
-        logger.info(f"  label {lb:2d}: {count:7d} voxels, {atlas_frac_in_window*100:.1f}% of atlas ({total:7d})")
+        logger.info(
+            f"  label {lb:2d}: {count:7d} voxels, {atlas_frac_in_window * 100:.1f}% of atlas ({total:7d})"
+        )
 
     # ── Compare with old mcx_volume_trunk.bin ─────────────────────────────────
     old_bin = Path("output/shared/mcx_volume_trunk.bin")
@@ -160,7 +164,9 @@ def main():
         logger.info(f"\n=== Old vs New mcx_volume_trunk.bin ===")
         logger.info(f"Old shape (ZYX): {old.shape}")
         logger.info(f"New shape (ZYX): {new_zyx.shape}")
-        logger.info(f"Voxel-wise mismatch: {mismatch}/{total} = {mismatch/total*100:.1f}%")
+        logger.info(
+            f"Voxel-wise mismatch: {mismatch}/{total} = {mismatch / total * 100:.1f}%"
+        )
         # Show Y-slice distribution of mismatches
         y_mismatch = (old != new_zyx).sum(axis=(0, 2))  # per Y slice
         for y in [0, 1, 2, 3, 4, 50, 100, 150, 198, 199]:

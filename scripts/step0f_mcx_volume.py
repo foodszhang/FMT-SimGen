@@ -28,7 +28,6 @@ from fmt_simgen.mcx_volume import (
     save_mcx_volume,
     print_volume_statistics,
 )
-from fmt_simgen.frame_contract import TRUNK_OFFSET_ATLAS_MM
 
 
 logging.basicConfig(
@@ -119,12 +118,12 @@ def main():
     voxel_size = float(atlas_data["voxel_size"])
     logger.info(f"Original atlas shape: {original_shape}, voxel size: {voxel_size} mm")
 
-    # Prepare MCX volume (y_start/y_end derived from TRUNK_OFFSET_ATLAS_MM inside mcx_volume.py)
+    # Prepare MCX volume (y_start/y_end from config mcx.trunk_crop)
     downsample_factor = mcx_config.get("downsample_factor", 2)
 
-    # Correct y_start/y_end for statistics logging
-    y_start = int(np.round(TRUNK_OFFSET_ATLAS_MM[1] / voxel_size))
-    y_end = y_start + int(np.round(40.0 / voxel_size))  # TRUNK_SIZE_MM[1] = 40mm
+    # Y crop parameters from config
+    y_start = int(mcx_config.get("trunk_crop_y_start", 340))
+    y_end = int(mcx_config.get("trunk_crop_y_end", 740))
 
     volume_zyx, material_list = prepare_mcx_volume(atlas_path, config)
 
@@ -155,7 +154,6 @@ def main():
     logger.info("MCX config section for config/default.yaml:")
     logger.info(f"  volume_path: {str(volume_bin_path.absolute())}")
     logger.info(f"  material_path: {str(material_yaml_path.absolute())}")
-    logger.info(f"  trunk_offset_mm: [0, {TRUNK_OFFSET_ATLAS_MM[1]:.1f}, 0]")
     logger.info(f"  volume_shape (ZYX): {list(volume_zyx.shape)}")
 
     logger.info("")

@@ -6,7 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, TRUNK_SIZE_MM
+from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, VOLUME_EXTENTS_MM
 
 out = Path("output/visualizations"); out.mkdir(parents=True, exist_ok=True)
 
@@ -34,7 +34,7 @@ ax.scatter(nodes[:, 0], nodes[:, 1], nodes[:, 2], s=1, c="gray", alpha=0.15)
 
 # MCX volume bbox wireframe (trunk-local)
 cx, cy, cz = VOLUME_CENTER_WORLD
-hx, hy, hz = TRUNK_SIZE_MM / 2.0
+hx, hy, hz = VOLUME_EXTENTS_MM / 2.0
 bbox_corners = np.array([
     [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
     [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

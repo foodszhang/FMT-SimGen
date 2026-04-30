@@ -1,0 +1,7 @@
+# U7 full regen: uniform trunk v2, voxel_grid_roi_size=38mm
+_base_: trunk_v2_20260421_161440.yaml
+
+dataset:
+  num_samples: 20
+  voxel_grid_roi_size_mm: 38.0
+  experiment_name: "uniform_trunk_v2_roi38"

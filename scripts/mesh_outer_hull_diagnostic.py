@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fmt_simgen.frame_contract import TRUNK_SIZE_MM
+from fmt_simgen.frame_contract import VOLUME_EXTENTS_MM
 
 
 def load_mesh():
@@ -102,9 +102,9 @@ def plot_outer_hull(nodes, faces, exterior_mask):
         a,b,c = pts
         return 0.5 * np.linalg.norm(np.cross(b-a, c-a))
     outer_area = sum(tri_area(nodes[f]) for f in outer_faces)
-    expected = 2 * (TRUNK_SIZE_MM[0]*TRUNK_SIZE_MM[1] +
-                     TRUNK_SIZE_MM[0]*TRUNK_SIZE_MM[2] +
-                     TRUNK_SIZE_MM[1]*TRUNK_SIZE_MM[2])
+    expected = 2 * (VOLUME_EXTENTS_MM[0]*VOLUME_EXTENTS_MM[1] +
+                     VOLUME_EXTENTS_MM[0]*VOLUME_EXTENTS_MM[2] +
+                     VOLUME_EXTENTS_MM[1]*VOLUME_EXTENTS_MM[2])
     print(f"Outer hull area: {outer_area:.1f} mm² (expected {expected:.1f} mm²)")
 
     fig = plt.figure(figsize=(14, 10))
@@ -118,8 +118,8 @@ def plot_outer_hull(nodes, faces, exterior_mask):
         ax.plot(pts_c[:, 0], pts_c[:, 1], pts_c[:, 2], "b-", linewidth=0.3, alpha=0.6)
 
     # MCX bbox wireframe
-    cx, cy, cz = TRUNK_SIZE_MM / 2
-    hx, hy, hz = TRUNK_SIZE_MM / 2
+    cx, cy, cz = VOLUME_EXTENTS_MM / 2
+    hx, hy, hz = VOLUME_EXTENTS_MM / 2
     bbox_corners = np.array([
         [cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
         [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz],

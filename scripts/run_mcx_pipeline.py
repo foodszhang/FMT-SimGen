@@ -105,7 +105,17 @@ def main() -> None:
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable debug logging",
     )
+    parser.add_argument(
+        "--sample_names",
+        type=str,
+        default=None,
+        help="Comma-separated list of sample names to process (e.g. 'sample_0000,sample_0001')",
+    )
     args = parser.parse_args()
+
+    sample_names = None
+    if args.sample_names:
+        sample_names = [s.strip() for s in args.sample_names.split(",")]
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -135,6 +145,7 @@ def main() -> None:
             projection_only=args.projection_only,
             max_workers=args.max_workers,
             no_skip=args.no_skip,
+            sample_names=sample_names,
         )
         sys.exit(0)
     except FileNotFoundError as e:

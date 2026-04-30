@@ -9,18 +9,13 @@ Pipeline:
   3. TetGen fills the volume with a single dummy region seed → all interior
      tets are labeled "1" (background / body).
   4. The per-tet tissue label is then looked up from the atlas volume at
-     the tet centroid (same method as iso2mesh fallback).  This avoids
-     relying on TetGen's broken multi-region CDT label propagation.
-
-  Note: For single-tissue meshes (or when you want per-tissue labeling via
-  TetGen regions), pass multiple region seeds with unique IDs.  But the
-  atlas-lookup method is the default and most reliable.
+     the tet centroid (same method as iso2mesh fallback).
 
 Dependencies: pip install "pyvista>=0.45" "tetgen>=0.8"  (VTK >= 9.3, 9.6+ recommended)
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -86,7 +81,9 @@ class AmiraMeshGenerator(MeshGenerator):
             boundary_style="external",
             background_value=0,
             simplify_output=False,
-            smoothing=False,
+            smoothing=self.smoothing_iterations > 0,
+            smoothing_iterations=self.smoothing_iterations,
+            smoothing_scale=self.smoothing_scale,
             pad_background=True,
             output_mesh_type="triangles",
         )
@@ -103,9 +100,6 @@ class AmiraMeshGenerator(MeshGenerator):
             logger.info(f"[amira]  after decimate: V={len(ext_verts)}, F={len(ext_faces)}")
 
         # ── Step 3: single region seed (just fills the volume) ──────────
-        # We use atlas-lookup for tissue labels, so we only need ONE region
-        # to tell TetGen "fill this PLC".  A seed at the bounding-box centre
-        # is guaranteed to be inside the exterior hull.
         bbox_center = ext_verts.mean(axis=0)
         logger.info(f"[amira] region seed (single, for volume fill): {bbox_center.tolist()}")
 
@@ -120,18 +114,32 @@ class AmiraMeshGenerator(MeshGenerator):
         logger.info(f"[amira] TetGen out: N={nodes.shape[0]}, T={elem.shape[0]}")
 
         # ── Step 5: atlas-lookup for per-tet tissue labels ──────────────
-        # TetGen region attributes are unreliable for multi-tissue meshes
-        # (Voronoi partitioning collapses to a single label).  Instead,
-        # look up the atlas label at each tet's centroid — same method as
-        # iso2mesh fallback, proven to work.
         nodes_out = np.asarray(nodes, dtype=np.float64)
         elements = np.asarray(elem[:, :4], dtype=np.int32)
 
-        tet_centroids = nodes_out[elements].mean(axis=1)  # [T, 3] in mm
+        tet_centroids = nodes_out[elements].mean(axis=1)
         ix = np.clip(np.round(tet_centroids[:, 0] / eff_vs).astype(int), 0, ds_shape[0] - 1)
         iy = np.clip(np.round(tet_centroids[:, 1] / eff_vs).astype(int), 0, ds_shape[1] - 1)
         iz = np.clip(np.round(tet_centroids[:, 2] / eff_vs).astype(int), 0, ds_shape[2] - 1)
         tissue_labels_elem = ds_vol[ix, iy, iz].astype(np.int32)
+
+        # ── NEW: Nearest-neighbor fallback for tets that hit background ──
+        bg_mask = tissue_labels_elem == 0
+        n_bg = int(bg_mask.sum())
+        if n_bg > 0:
+            logger.info(f"[amira] {n_bg}/{len(tissue_labels_elem)} tets hit bg; applying EDT NN fallback")
+            _, nn_idx = distance_transform_edt(
+                ds_vol == 0, return_distances=True, return_indices=True
+            )
+            bg_i, bg_j, bg_k = ix[bg_mask], iy[bg_mask], iz[bg_mask]
+            nn_i = nn_idx[0, bg_i, bg_j, bg_k]
+            nn_j = nn_idx[1, bg_i, bg_j, bg_k]
+            nn_k = nn_idx[2, bg_i, bg_j, bg_k]
+            tissue_labels_elem[bg_mask] = ds_vol[nn_i, nn_j, nn_k].astype(np.int32)
+            remaining = int((tissue_labels_elem == 0).sum())
+            if remaining > 0:
+                logger.warning(f"[amira] {remaining} tets still label=0 after NN — forcing to 1 (skin)")
+                tissue_labels_elem[tissue_labels_elem == 0] = 1
 
         uniq, counts = np.unique(tissue_labels_elem, return_counts=True)
         label_dist = dict(zip(uniq.tolist(), counts.tolist()))
@@ -142,7 +150,6 @@ class AmiraMeshGenerator(MeshGenerator):
         surface_faces = ext_faces.copy()
         surface_node_indices = np.unique(surface_faces).astype(np.int32)
 
-        # Verify exterior surface is a proper closed 2-manifold
         self._verify_exterior_surface(surface_faces)
 
         mesh_data = MeshData(

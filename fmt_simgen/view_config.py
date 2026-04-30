@@ -53,7 +53,7 @@ class TurntableCamera:
         self.pixel_size_mm: float = self.fov_mm / self.detector_resolution[0]
 
         # Volume center in world/trunk-local coordinates (mm).
-        # Must match VOLUME_CENTER_WORLD (= TRUNK_SIZE_MM/2).
+        # Must match VOLUME_CENTER_WORLD (= VOLUME_EXTENTS_MM / 2).
         self.volume_center_world: np.ndarray = np.array(
             config.get("volume_center_world", VOLUME_CENTER_WORLD), dtype=np.float64
         )
@@ -391,7 +391,7 @@ def get_visible_surface_nodes_from_mcx_depth(
     voxel_size : float
         MCX voxel size in mm.
     volume_center_world : tuple[float, float, float]
-        Physical center of the MCX volume in trunk-local mm (VOLUME_CENTER_WORLD = TRUNK_SIZE_MM/2).
+        Physical center of the MCX volume in trunk-local mm (VOLUME_CENTER_WORLD = VOLUME_EXTENTS_MM / 2).
     epsilon : float
         One-sided depth tolerance in mm (default 0.5).
         A node is visible if node_depth <= mcx_depth + epsilon.
