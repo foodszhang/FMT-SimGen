@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Step 0e-v2: Compute full-node Graph Laplacians (all 11535 nodes).
+Step 0e-v2: Compute full-node Graph Laplacians (all nodes).
 
 Computes:
 1. Topological Laplacian (Lap_full) from tetrahedral element adjacency
@@ -9,11 +9,13 @@ Computes:
 
 Usage:
     python scripts/step0e_v2_full_graph_laplacian.py
+    python scripts/step0e_v2_full_graph_laplacian.py --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz --output-dir output/shared_mesh_20k
 """
 
 import sys
 from pathlib import Path
 import time
+import argparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -21,6 +23,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.spatial import KDTree
 from sklearn.neighbors import NearestNeighbors
+
+OUTPUT_DIR = Path(__file__).parent.parent / "output" / "shared"
 
 
 def extract_edges_from_elements(elements: np.ndarray) -> np.ndarray:
@@ -133,20 +137,42 @@ def kernel_laplacian_radius(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Step 0e-v2: Full-node Graph Laplacian")
+    parser.add_argument(
+        "--mesh",
+        type=str,
+        default=None,
+        help="Mesh file path (default: output/shared/mesh.npz)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: output/shared/)",
+    )
+    args = parser.parse_args()
+
     t_start = time.time()
 
-    shared_dir = Path(__file__).parent.parent / "output" / "shared"
-    shared_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
+    mesh_path = Path(args.mesh) if args.mesh else output_dir / "mesh.npz"
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
     print("Step 0e-v2: Full-node Graph Laplacian")
     print("=" * 60)
+    print(f"Mesh: {mesh_path}")
+    print(f"Output: {output_dir}")
 
-    # Load mesh
+    if not mesh_path.exists():
+        print(f"Error: Mesh file not found: {mesh_path}")
+        sys.exit(1)
+
     print("\n[1] Loading mesh...")
-    mesh = np.load(shared_dir / "mesh.npz")
-    nodes = mesh["nodes"].astype(np.float32)  # [11535, 3]
-    elements = mesh["elements"]  # [60026, 4]
+    mesh = np.load(mesh_path)
+    nodes = mesh["nodes"].astype(np.float32)
+    elements = mesh["elements"]
     n_nodes = nodes.shape[0]
     print(f"    nodes: {nodes.shape}, elements: {elements.shape}")
 
@@ -162,7 +188,7 @@ def main():
 
     t0 = time.time()
     Lap = topological_laplacian(W)
-    lap_path = shared_dir / "graph_laplacian_full.Lap.npz"
+    lap_path = output_dir / "graph_laplacian_full.Lap.npz"
     sp.save_npz(lap_path, Lap)
     t_elapsed = time.time() - t0
     sparsity = Lap.nnz / (n_nodes * n_nodes) * 100
@@ -179,7 +205,7 @@ def main():
         print(f"\n[3.{lap_idx}] Kernel Laplacian r={r}mm (n_Lap{lap_idx})...")
         t0 = time.time()
         L_r = kernel_laplacian_radius(nodes, r, sigma=r)
-        out_path = shared_dir / f"graph_laplacian_full.n_Lap{lap_idx}.npz"
+        out_path = output_dir / f"graph_laplacian_full.n_Lap{lap_idx}.npz"
         sp.save_npz(out_path, L_r)
         t_elapsed = time.time() - t0
         sparsity = L_r.nnz / (n_nodes * n_nodes) * 100
@@ -197,7 +223,7 @@ def main():
     distances, indices = nn.kneighbors(nodes)
     # Remove self (first column)
     knn_idx = indices[:, 1:].astype(np.int32)  # [11535, 32]
-    knn_path = shared_dir / "knn_idx_full.npy"
+    knn_path = output_dir / "knn_idx_full.npy"
     np.save(knn_path, knn_idx)
     t_elapsed = time.time() - t0
     print(f"    knn_idx: {knn_idx.shape}, time={t_elapsed:.1f}s")
@@ -207,7 +233,7 @@ def main():
     # ----------------------------------------------------------------
     total_time = time.time() - t_start
     print("\n" + "=" * 60)
-    print("Summary - output files in output/shared/")
+    print(f"Summary - output files in {output_dir}/")
     print("=" * 60)
 
     files = [
@@ -219,7 +245,7 @@ def main():
         "knn_idx_full.npy",
     ]
     for fname in files:
-        fpath = shared_dir / fname
+        fpath = output_dir / fname
         if fpath.exists():
             size_mb = fpath.stat().st_size / 1e6
             if fname.endswith(".npy"):

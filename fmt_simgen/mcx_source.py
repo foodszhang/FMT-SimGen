@@ -49,6 +49,14 @@ def tumor_params_to_mcx_pattern(
     ValueError
         If no foci produce non-zero voxels or focus is outside volume bounds.
     """
+    # Extract parameters from tumor_params
+    foci = tumor_params.get("foci", [])
+    source_type = tumor_params.get("source_type", "gaussian")
+    
+    # Extract parameters from mcx_config
+    voxel_size_mm = mcx_config.get("voxel_size_mm", 0.2)
+    volume_shape = mcx_config.get("volume_shape", [104, 200, 190])
+    
     # Compute global pattern bbox from all foci
     global_min_voxel = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
     global_max_voxel = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)

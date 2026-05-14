@@ -1,0 +1,35 @@
+# Uniform tumor sources (radius 1-2mm), 1-3 foci, 1000 samples
+# Using 20k mesh for smaller memory footprint
+_base_: default.yaml
+
+mesh:
+  mesh_file: "output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz"
+  output_path: "output/shared_mesh_20k/"
+
+mcx:
+  volume_path: "output/shared_mesh_20k/mcx_volume_trunk.bin"
+  material_path: "output/shared_mesh_20k/mcx_material.yaml"
+
+dataset:
+  num_samples: 1000
+  voxel_grid_roi_size_mm: 38.0
+  experiment_name: "uniform_1000_20k"
+
+tumor:
+  source_type: "uniform"
+  radius_range: [1.0, 2.0]
+  num_foci_distribution:
+    1: 0.34
+    2: 0.33
+    3: 0.33
+  depth_distribution:
+    shallow: {range: [1.5, 3.5], weight: 0.35}
+    medium:  {range: [3.5, 6.0], weight: 0.40}
+    deep:    {range: [6.0, 8.0], weight: 0.25}
+  min_foci_distance_abs: 2.0
+
+quality_filter:
+  enabled: true
+  min_b_max: 0.001
+  min_gt_nonzero_count: 5
+  max_retries: 20

@@ -3,17 +3,19 @@
 Step 0c: FEM System Matrix Assembly
 
 This script:
-1. Loads mesh from output/shared/mesh.npz
+1. Loads mesh from specified path (default: output/shared/mesh.npz)
 2. Loads optical parameters from config
 3. Assembles FEM matrices (K, C, F, B, M)
 4. Computes forward matrix A = M^{-1} * F
-5. Saves system matrix to output/shared/system_matrix.npz
+5. Saves system matrix to output directory
 
 Usage:
+    python scripts/step0c_fem_matrix.py
+    python scripts/step0c_fem_matrix.py --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz --output-dir output/shared_mesh_20k
     python scripts/step0c_fem_matrix.py [--compute_A]
 
 Output:
-    output/shared/system_matrix.*.npz
+    {output_dir}/system_matrix.*.npz
 """
 
 import sys
@@ -49,6 +51,18 @@ def load_config():
 def main():
     parser = argparse.ArgumentParser(description="Step 0c: FEM System Matrix Assembly")
     parser.add_argument(
+        "--mesh",
+        type=str,
+        default=None,
+        help="Mesh file path (default: output/shared/mesh.npz)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: output/shared/)",
+    )
+    parser.add_argument(
         "--compute_A",
         action="store_true",
         help="Compute forward matrix A (takes a few minutes)",
@@ -60,14 +74,29 @@ def main():
     )
     args = parser.parse_args()
 
+    output_dir = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mesh_path = Path(args.mesh) if args.mesh else output_dir / "mesh.npz"
+
     logger.info("=" * 60)
     logger.info("Step 0c: FEM System Matrix Assembly")
     logger.info("=" * 60)
+    logger.info(f"Mesh: {mesh_path}")
+    logger.info(f"Output: {output_dir}")
 
     config = load_config()
 
-    mesh_path = OUTPUT_DIR / "mesh.npz"
+    if not mesh_path.exists():
+        logger.error(f"Mesh file not found: {mesh_path}")
+        sys.exit(1)
+
+    mesh_data = np.load(mesh_path, allow_pickle=True)
     logger.info(f"Loading mesh from: {mesh_path}")
+    if not mesh_path.exists():
+        logger.error(f"Mesh file not found: {mesh_path}")
+        sys.exit(1)
+
     mesh_data = np.load(mesh_path, allow_pickle=True)
 
     nodes = mesh_data["nodes"]
@@ -114,12 +143,12 @@ def main():
         logger.info(f"Forward matrix max: {A.max():.6f}, min: {A.min():.6f}")
 
     logger.info("\nSaving system matrix...")
-    solver.save_system_matrix(str(OUTPUT_DIR / "system_matrix"))
+    solver.save_system_matrix(str(output_dir / "system_matrix"))
 
     logger.info("=" * 60)
     logger.info("FEM MATRIX ASSEMBLY COMPLETE")
     logger.info("=" * 60)
-    logger.info(f"Output files: {OUTPUT_DIR / 'system_matrix.*.npz'}")
+    logger.info(f"Output files: {output_dir / 'system_matrix.*.npz'}")
 
 
 if __name__ == "__main__":

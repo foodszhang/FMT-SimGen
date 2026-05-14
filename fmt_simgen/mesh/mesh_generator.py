@@ -70,6 +70,7 @@ class MeshGenerator:
         self.deep_maxvol = config.get("deep_maxvol", 5.0)
         self.roi_maxvol = config.get("roi_maxvol", 1.0)
         self.output_path = Path(config.get("output_path", "assets/mesh/"))
+        self.trunk_bbox_atlas = config.get("trunk_bbox_atlas", self.TRUNK_BBOX_ATLAS)
 
     def generate(
         self,
@@ -222,7 +223,7 @@ class MeshGenerator:
 
         nodes = mesh_data.nodes
         elements = mesh_data.elements
-        bbox = self.TRUNK_BBOX_ATLAS
+        bbox = self.trunk_bbox_atlas
 
         in_bbox = (
             (nodes[:, 0] >= bbox["x"][0]) & (nodes[:, 0] <= bbox["x"][1]) &

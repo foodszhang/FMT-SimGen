@@ -23,10 +23,10 @@ from typing import Optional
 
 import numpy as np
 
-from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD, VOXEL_SIZE_MM
 from fmt_simgen.mcx_config import generate_mcx_config
 from fmt_simgen.mcx_projection import project_sample
 from fmt_simgen.mcx_runner import detect_mcx_executable, run_mcx_single
+from fmt_simgen.subject import load_subject_manifest
 from fmt_simgen.view_config import TurntableCamera
 
 logger = logging.getLogger(__name__)
@@ -112,12 +112,12 @@ def _run_projection_single(
     sample_dir: Path,
     camera: TurntableCamera,
     skip_existing: bool = True,
-    voxel_size_mm: float = VOXEL_SIZE_MM,
+    voxel_size_mm: float = 0.2,
     volume_center_world: tuple[float, float, float] | None = None,
 ) -> tuple[str, bool, str]:
     """Run projection for a single sample."""
     if volume_center_world is None:
-        volume_center_world = tuple(VOLUME_CENTER_WORLD)
+        volume_center_world = tuple(camera.volume_center_world.tolist())
     sample_id = sample_dir.name
     try:
         proj_path = project_sample(
@@ -187,7 +187,17 @@ def run_mcx_pipeline(
 
     # Derive project root for shared artifacts path (only used for fallback)
     project_root = Path(__file__).parent.parent.parent
-    shared_dir = project_root / "output" / "shared"
+    mcx_cfg = config.get("mcx", {})
+    mesh_cfg = config.get("mesh", {})
+    shared_dir = Path(mesh_cfg.get("output_path", "output/shared"))
+    if not shared_dir.is_absolute():
+        shared_dir = project_root / shared_dir
+    if "volume_path" in mcx_cfg:
+        volume_path_cfg = Path(mcx_cfg["volume_path"])
+        volume_path_abs = volume_path_cfg if volume_path_cfg.is_absolute() else project_root / volume_path_cfg
+        shared_dir = volume_path_abs.parent
+
+    subject = load_subject_manifest(config, shared_dir)
 
     # view_config: use config["view_config"] if present, else fallback to JSON
     if "view_config" in config and config["view_config"].get("angles"):
@@ -202,10 +212,14 @@ def run_mcx_pipeline(
         with open(view_json_path, "r") as f:
             view_cfg = json.load(f)
 
+    view_cfg = dict(view_cfg)
+    view_cfg.setdefault("volume_center_world", subject.volume_center_world_mm.tolist())
     camera = TurntableCamera(view_cfg)
-    mcx_cfg = config.get("mcx", {})
-    voxel_size_mm = mcx_cfg.get("voxel_size_mm", VOXEL_SIZE_MM)
-    volume_center_world = tuple(VOLUME_CENTER_WORLD)
+    voxel_size_mm = subject.voxel_size_mm
+    volume_center_world = tuple(subject.volume_center_world_mm.tolist())
+    mcx_cfg = dict(mcx_cfg)
+    mcx_cfg["voxel_size_mm"] = subject.voxel_size_mm
+    mcx_cfg["volume_shape"] = list(subject.shape_zyx)
 
     logger.info(
         "run_mcx_pipeline: samples_dir=%s, projection_only=%s, max_workers=%d",
@@ -226,7 +240,9 @@ def run_mcx_pipeline(
 
     # MCX volume file pre-check (only needed for simulation phase)
     if not projection_only:
-        mcx_volume_bin = shared_dir / "mcx_volume_trunk.bin"
+        mcx_volume_bin = Path(mcx_cfg.get("volume_path", shared_dir / "mcx_volume_trunk.bin"))
+        if not mcx_volume_bin.is_absolute():
+            mcx_volume_bin = project_root / mcx_volume_bin
         if not mcx_volume_bin.exists():
             raise FileNotFoundError(
                 f"mcx_volume_trunk.bin not found at {mcx_volume_bin}. "

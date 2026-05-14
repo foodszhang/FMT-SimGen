@@ -9,14 +9,16 @@ is cropped to the ROI defined by the mesh's physical bounds.
 
 Usage:
     python scripts/step0d_voxel_grid.py
+    python scripts/step0d_voxel_grid.py --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz --output-dir output/shared_mesh_20k
 
 Output:
-    output/shared/voxel_grid.npz
+    {output_dir}/voxel_grid.npz
 """
 
 import sys
 from pathlib import Path
 import logging
+import argparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -93,17 +95,41 @@ def define_voxel_grid(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Step 0d: Voxel Grid Definition")
+    parser.add_argument(
+        "--mesh",
+        type=str,
+        default=None,
+        help="Mesh file path (default: output/shared/mesh.npz)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: output/shared/)",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
+    output_dir = Path(args.output_dir) if args.output_dir else OUTPUT_DIR
+    mesh_path = Path(args.mesh) if args.mesh else output_dir / "mesh.npz"
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     logger.info("=" * 60)
     logger.info("Step 0d: Voxel Grid Definition")
     logger.info("=" * 60)
+    logger.info(f"Mesh: {mesh_path}")
+    logger.info(f"Output: {output_dir}")
 
-    mesh_path = OUTPUT_DIR / "mesh.npz"
-    logger.info(f"Loading mesh from: {mesh_path}")
+    if not mesh_path.exists():
+        logger.error(f"Mesh file not found: {mesh_path}")
+        sys.exit(1)
+
     mesh_data = np.load(mesh_path, allow_pickle=True)
 
     nodes = mesh_data["nodes"]
@@ -113,7 +139,7 @@ def main():
 
     grid_def = define_voxel_grid(nodes, spacing=spacing, margin_mm=2.0)
 
-    output_path = OUTPUT_DIR / "voxel_grid.npz"
+    output_path = output_dir / "voxel_grid.npz"
     np.savez(
         output_path,
         shape=grid_def["shape"],

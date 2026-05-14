@@ -33,10 +33,9 @@ import nibabel as nib
 import iso2mesh
 from scipy import ndimage
 import scipy.io as sio
-import yaml
-
-from fmt_simgen.frame_contract import VOLUME_EXTENTS_MM, assert_in_trunk_bbox
 from fmt_simgen.mesh.mesh_generator import MeshGenerator
+from fmt_simgen.pipeline.shared import load_config_with_inheritance
+from fmt_simgen.subject import subject_manifest_from_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -345,22 +344,37 @@ def main():
         help="Output name prefix (default: digimouse_trunk_mesh)",
     )
     parser.add_argument(
+        "--config",
+        type=str,
+        default="config/default.yaml",
+        help="Path to config YAML (default: config/default.yaml)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: mesh.output_path from config)",
+    )
+    parser.add_argument(
         "--no-viz",
         action="store_true",
         help="Skip visualization generation",
     )
     args = parser.parse_args()
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    VIS_DIR.mkdir(parents=True, exist_ok=True)
-
     logger.info("=" * 60)
     logger.info("Step 0b: Multi-label Mesh Generation (iso2mesh cgalmesh)")
     logger.info("=" * 60)
 
     # ── Load config ──────────────────────────────────────────────────────────
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = load_config_with_inheritance(str(Path(__file__).parent.parent / args.config))
+    subject = subject_manifest_from_config(config)
+    output_dir = Path(args.output_dir) if args.output_dir else Path(subject.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = Path(__file__).parent.parent / output_dir
+    vis_dir = output_dir / "visualizations"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vis_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Atlas path ──────────────────────────────────────────────────────────
     if args.atlas:
@@ -370,9 +384,10 @@ def main():
     logger.info(f"Atlas path: {atlas_path}")
 
     # ── Trunk crop parameters ──────────────────────────────────────────────
-    y_start = config["mcx"]["trunk_crop"]["y_start"]  # 340 at 0.1mm
-    y_end = config["mcx"]["trunk_crop"]["y_end"]      # 740 at 0.1mm
-    logger.info(f"Trunk crop Y: [{y_start}, {y_end}] at 0.1mm")
+    crop_cfg = config["mcx"].get("trunk_crop", {})
+    y_start = int(config["mcx"].get("trunk_crop_y_start", crop_cfg.get("y_start", 340)))
+    y_end = int(config["mcx"].get("trunk_crop_y_end", crop_cfg.get("y_end", 740)))
+    logger.info(f"Trunk crop Y: [{y_start}, {y_end}]")
 
     # ── Tissue mapping ──────────────────────────────────────────────────────
     tissue_mapping = config["atlas"]["tissue_merge"]
@@ -383,7 +398,18 @@ def main():
     logger.info(f"Original atlas shape: {volume.shape}")
 
     # ── Crop trunk ──────────────────────────────────────────────────────────
-    trunk = volume[:, y_start:y_end, :].copy()
+    x_start, x_end = 0, volume.shape[0]
+    z_start, z_end = 0, volume.shape[2]
+    voxel_size = config["atlas"]["voxel_size"]
+    if subject.crop_bbox_mm is not None:
+        bbox = subject.crop_bbox_mm
+        x_start = int(round(float(bbox["x"][0]) / voxel_size))
+        x_end = int(round(float(bbox["x"][1]) / voxel_size))
+        y_start = int(round(float(bbox["y"][0]) / voxel_size))
+        y_end = int(round(float(bbox["y"][1]) / voxel_size))
+        z_start = int(round(float(bbox["z"][0]) / voxel_size))
+        z_end = int(round(float(bbox["z"][1]) / voxel_size))
+    trunk = volume[x_start:x_end, y_start:y_end, z_start:z_end].copy()
     logger.info(f"Trunk shape after crop: {trunk.shape}")
 
     # ── Apply tissue mapping ─────────────────────────────────────────────────
@@ -391,7 +417,6 @@ def main():
 
     # ── Downsample ───────────────────────────────────────────────────────────
     downsample_factor = args.downsample
-    voxel_size = config["atlas"]["voxel_size"]  # 0.1mm original
     effective_voxel = voxel_size * downsample_factor  # 0.2mm
 
     vol_ds = downsample_volume(trunk_mapped, downsample_factor)
@@ -449,7 +474,9 @@ def main():
     # ── Verification: assert nodes are in trunk-local frame ──────────────────
     logger.info("\n=== Frame Verification ===")
     try:
-        assert_in_trunk_bbox(nodes_phys, tol_mm=3.0)
+        extents = subject.volume_extents_mm
+        assert (nodes_phys.min(axis=0) >= -3.0).all()
+        assert (nodes_phys.max(axis=0) <= extents + 3.0).all()
         logger.info("✓ assert_in_trunk_bbox passed: nodes are in trunk-local frame")
     except AssertionError as e:
         logger.error(f"✗ Frame verification failed: {e}")
@@ -458,7 +485,8 @@ def main():
     # Check bbox vs trunk size
     nodes_min, nodes_max = nodes_phys.min(axis=0), nodes_phys.max(axis=0)
     logger.info(f"Mesh bbox: min={nodes_min}, max={nodes_max}")
-    logger.info(f"Trunk size: [0, {VOLUME_EXTENTS_MM[0]}] × [0, {VOLUME_EXTENTS_MM[1]}] × [0, {VOLUME_EXTENTS_MM[2]}]")
+    extents = subject.volume_extents_mm
+    logger.info(f"Trunk size: [0, {extents[0]}] × [0, {extents[1]}] × [0, {extents[2]}]")
 
     # Check exterior surface quality
     V_ext = len(np.unique(exterior_faces))
@@ -468,8 +496,8 @@ def main():
 
     # ── Save mesh ─────────────────────────────────────────────────────────────
     output_name = args.output_name
-    mesh_npz = OUTPUT_DIR / f"{output_name}.npz"
-    mesh_mat = OUTPUT_DIR / f"{output_name}.mat"
+    mesh_npz = output_dir / f"{output_name}.npz"
+    mesh_mat = output_dir / f"{output_name}.mat"
 
     np.savez(
         mesh_npz,
@@ -481,6 +509,9 @@ def main():
         surface_node_indices=np.unique(exterior_faces),
     )
     logger.info(f"Saved: {mesh_npz}")
+    subject.mcx_volume.shape_xyz = tuple(int(v) for v in vol_ds.shape)
+    subject.output_dir = str(output_dir)
+    subject.save(output_dir / "frame_manifest.json")
 
     sio.savemat(
         mesh_mat,
@@ -503,7 +534,7 @@ def main():
                 tissue_labels,
                 exterior_faces,
                 interface_faces,
-                VIS_DIR,
+                vis_dir,
             )
         except Exception as e:
             logger.warning(f"Visualization failed: {e}")
@@ -515,7 +546,7 @@ def main():
     logger.info(f"  NPZ: {mesh_npz}")
     logger.info(f"  MAT: {mesh_mat}")
     if not args.no_viz:
-        logger.info(f"  Visualizations: {VIS_DIR}/mesh_*.png")
+        logger.info(f"  Visualizations: {vis_dir}/mesh_*.png")
 
 
 if __name__ == "__main__":

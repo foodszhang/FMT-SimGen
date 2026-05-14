@@ -28,6 +28,8 @@ from fmt_simgen.mcx_volume import (
     save_mcx_volume,
     print_volume_statistics,
 )
+from fmt_simgen.pipeline.shared import load_config_with_inheritance
+from fmt_simgen.subject import subject_manifest_from_config
 
 
 logging.basicConfig(
@@ -37,14 +39,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path(__file__).parent.parent / "output" / "shared"
-
-
-def load_config() -> dict:
-    """Load configuration from config/default.yaml."""
-    config_path = Path(__file__).parent.parent / "config" / "default.yaml"
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    return config
 
 
 def main():
@@ -62,6 +56,12 @@ def main():
         type=str,
         default=None,
         help="Output directory (default: output/shared)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config/default.yaml",
+        help="Path to config YAML (default: config/default.yaml)",
     )
     parser.add_argument(
         "--skip_stats",
@@ -82,8 +82,10 @@ def main():
     logger.info("=" * 60)
 
     # Load config
-    config = load_config()
+    config_path = Path(__file__).parent.parent / args.config
+    config = load_config_with_inheritance(str(config_path))
     mcx_config = config.get("mcx", {})
+    subject = subject_manifest_from_config(config)
     logger.info(f"MCX config: {mcx_config}")
 
     # Atlas path
@@ -122,8 +124,9 @@ def main():
     downsample_factor = mcx_config.get("downsample_factor", 2)
 
     # Y crop parameters from config
-    y_start = int(mcx_config.get("trunk_crop_y_start", 340))
-    y_end = int(mcx_config.get("trunk_crop_y_end", 740))
+    crop_cfg = mcx_config.get("trunk_crop", {})
+    y_start = int(mcx_config.get("trunk_crop_y_start", crop_cfg.get("y_start", 340)))
+    y_end = int(mcx_config.get("trunk_crop_y_end", crop_cfg.get("y_end", 740)))
 
     volume_zyx, material_list = prepare_mcx_volume(atlas_path, config)
 
@@ -131,6 +134,9 @@ def main():
     volume_bin_path, material_yaml_path = save_mcx_volume(
         volume_zyx, material_list, output_dir
     )
+    subject.mcx_volume.shape_xyz = (volume_zyx.shape[2], volume_zyx.shape[1], volume_zyx.shape[0])
+    subject.output_dir = str(output_dir)
+    subject.save(output_dir / "frame_manifest.json")
 
     # Print statistics
     if not args.skip_stats:

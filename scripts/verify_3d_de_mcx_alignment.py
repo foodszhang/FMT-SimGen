@@ -10,6 +10,7 @@ Renders side-by-side 3D views of:
 
 Usage:
     python scripts/verify_3d_de_mcx_alignment.py --sample sample_0000 --samples_dir data/small_uniform_5samples/samples
+    python scripts/verify_3d_de_mcx_alignment.py --sample sample_0000 --samples_dir data/mesh_20k_test/samples --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz
 """
 
 import json
@@ -25,7 +26,9 @@ import jdata as jd
 from scipy import ndimage
 
 
-def resolve_shared_mesh_path() -> Path:
+def resolve_shared_mesh_path(mesh_path: Path = None) -> Path:
+    if mesh_path and mesh_path.exists():
+        return mesh_path
     candidates = [
         Path("output/shared/digimouse_trunk_mesh.npz"),
         Path("output/shared/mesh.npz"),
@@ -39,12 +42,14 @@ def resolve_shared_mesh_path() -> Path:
     )
 
 
-def load_shared_mesh() -> np.lib.npyio.NpzFile:
-    return np.load(resolve_shared_mesh_path())
+def load_shared_mesh(mesh_path: Path = None) -> np.lib.npyio.NpzFile:
+    return np.load(resolve_shared_mesh_path(mesh_path))
 
 
-def load_label_volume() -> np.ndarray | None:
-    label_path = Path("output/shared/mcx_volume_trunk.bin")
+def load_label_volume(shared_dir: Path = None) -> np.ndarray | None:
+    if shared_dir is None:
+        shared_dir = Path("output/shared")
+    label_path = shared_dir / "mcx_volume_trunk.bin"
     if not label_path.exists():
         return None
     vol = np.fromfile(label_path, dtype=np.uint8)
@@ -54,8 +59,8 @@ def load_label_volume() -> np.ndarray | None:
     return vol
 
 
-def get_body_surface_mask(shape: tuple[int, int, int]) -> np.ndarray:
-    label_vol = load_label_volume()
+def get_body_surface_mask(shape: tuple[int, int, int], shared_dir: Path = None) -> np.ndarray:
+    label_vol = load_label_volume(shared_dir)
     if label_vol is None or label_vol.shape != shape:
         nx, ny, nz = shape
         surface = np.zeros(shape, dtype=bool)
@@ -114,9 +119,9 @@ def get_source_pos_and_shape(sample_dir: Path) -> tuple:
     return Pos, shape
 
 
-def build_mesh_surface() -> pv.PolyData:
+def build_mesh_surface(mesh_path: Path = None) -> pv.PolyData:
     """Build PyVista PolyData from mesh.npz surface faces."""
-    mesh = load_shared_mesh()
+    mesh = load_shared_mesh(mesh_path)
     nodes = mesh["nodes"].astype(np.float64)
     sf = mesh["surface_faces"].astype(np.int32)
     n_faces = len(sf)
@@ -127,10 +132,11 @@ def build_mesh_surface() -> pv.PolyData:
 def render_de_side(
     plotter: pv.Plotter,
     sample_dir: Path,
+    mesh_path: Path = None,
     spacing: float = 0.2,
 ) -> None:
     """Render DE side: mesh + tumor core + surface nodes colored by b."""
-    mesh_surf = build_mesh_surface()
+    mesh_surf = build_mesh_surface(mesh_path)
     if mesh_surf is not None:
         plotter.add_mesh(mesh_surf, color="lightblue", opacity=0.2,
                         style="surface", show_edges=False, label="mesh surface")
@@ -150,7 +156,7 @@ def render_de_side(
                         label=f"tumor core ({tumor_core.sum():,} vox)")
 
     # Surface nodes colored by measurement_b
-    mesh = load_shared_mesh()
+    mesh = load_shared_mesh(mesh_path)
     surface_nodes = mesh["nodes"][mesh["surface_node_indices"]]
     b = np.load(sample_dir / "measurement_b.npy")
     if len(b) == len(surface_nodes):
@@ -164,10 +170,11 @@ def render_de_side(
 def render_mcx_side(
     plotter: pv.Plotter,
     sample_dir: Path,
+    mesh_path: Path = None,
     spacing: float = 0.2,
 ) -> None:
     """Render MCX side: mesh + source pattern (binary, at Pos offset) + surface fluence."""
-    mesh_surf = build_mesh_surface()
+    mesh_surf = build_mesh_surface(mesh_path)
     if mesh_surf is not None:
         plotter.add_mesh(mesh_surf, color="lightblue", opacity=0.2,
                         style="surface", show_edges=False, label="mesh surface")
@@ -202,10 +209,12 @@ def render_mcx_side(
 def render_surface_fluence_side(
     plotter: pv.Plotter,
     sample_dir: Path,
+    mesh_path: Path = None,
     spacing: float = 0.2,
+    shared_dir: Path = None,
 ) -> None:
     """Render surface fluence comparison: DE b values vs MCX fluence at surface."""
-    mesh = load_shared_mesh()
+    mesh = load_shared_mesh(mesh_path)
     surface_nodes = mesh["nodes"][mesh["surface_node_indices"]]
     b = np.load(sample_dir / "measurement_b.npy")
 
@@ -223,7 +232,7 @@ def render_surface_fluence_side(
         fluence = np.transpose(nifti, (2, 1, 0))
 
         # Trunk/body surface voxels (not cube boundary)
-        surf_mask = get_body_surface_mask(fluence.shape)
+        surf_mask = get_body_surface_mask(fluence.shape, shared_dir)
 
         # Only keep non-zero fluence at surface
         surf_fluence = fluence * surf_mask
@@ -248,28 +257,30 @@ def render_surface_fluence_side(
 def render_comparison_3d(
     sample_dir: Path,
     output_path: Path,
+    mesh_path: Path = None,
     spacing: float = 0.2,
+    shared_dir: Path = None,
 ) -> None:
     """Render 3-row 2-column 3D comparison."""
     plotter = pv.Plotter(window_size=[1600, 1500], off_screen=True, shape=(3, 2))
 
     # Row 0, Col 0: DE tumor core
     plotter.subplot(0, 0)
-    render_de_side(plotter, sample_dir, spacing)
+    render_de_side(plotter, sample_dir, mesh_path, spacing)
     plotter.add_axes()
     plotter.add_legend()
     plotter.add_title("DE: mesh + tumor core (red) + surface b (cyan)")
 
     # Row 0, Col 1: MCX source
     plotter.subplot(0, 1)
-    render_mcx_side(plotter, sample_dir, spacing)
+    render_mcx_side(plotter, sample_dir, mesh_path, spacing)
     plotter.add_axes()
     plotter.add_legend()
     plotter.add_title("MCX: mesh + source (yellow)")
 
     # Row 1, Col 0: DE surface fluence (b values at mesh nodes) - NO mesh overlay
     plotter.subplot(1, 0)
-    mesh = load_shared_mesh()
+    mesh = load_shared_mesh(mesh_path)
     surf_cloud_de = pv.PolyData(mesh["nodes"][mesh["surface_node_indices"]])
     b = np.load(sample_dir / "measurement_b.npy")
     surf_cloud_de["b"] = b
@@ -289,7 +300,7 @@ def render_comparison_3d(
         nifti = data["NIFTIData"][:, :, :, 0, 0]
         fluence = np.transpose(nifti, (2, 1, 0))
 
-        surf_mask = get_body_surface_mask(fluence.shape)
+        surf_mask = get_body_surface_mask(fluence.shape, shared_dir)
 
         surf_fluence = fluence * surf_mask
         xi, yi, zi = np.where(surf_fluence > 0)
@@ -313,7 +324,7 @@ def render_comparison_3d(
 
     # Row 2, Col 0: gt_voxels with mesh surface
     plotter.subplot(2, 0)
-    mesh_surf = build_mesh_surface()
+    mesh_surf = build_mesh_surface(mesh_path)
     if mesh_surf is not None:
         plotter.add_mesh(mesh_surf, color="lightblue", opacity=0.2,
                         style="surface", show_edges=False)
@@ -337,7 +348,7 @@ def render_comparison_3d(
     if mesh_surf is not None:
         plotter.add_mesh(mesh_surf, color="lightblue", opacity=0.2,
                         style="surface", show_edges=False)
-    mesh = load_shared_mesh()
+    mesh = load_shared_mesh(mesh_path)
     nodes = mesh["nodes"]
     gt_nodes = np.load(sample_dir / "gt_nodes.npy")
     tumor_nodes = gt_nodes > 0.5
@@ -438,24 +449,30 @@ def main():
     parser.add_argument("--sample", type=str, default="sample_0000")
     parser.add_argument("--samples_dir", type=str, default="data/small_uniform_5samples/samples")
     parser.add_argument("--output_dir", type=str, default="output/verification")
+    parser.add_argument("--mesh", type=str, default=None, help="Mesh file path (default: auto-detect)")
+    parser.add_argument("--shared-dir", type=str, default=None, help="Shared directory for mcx_volume_trunk.bin (default: output/shared)")
     args = parser.parse_args()
 
     sample_dir = Path(args.samples_dir) / args.sample
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    mesh_path = Path(args.mesh) if args.mesh else None
+    shared_dir = Path(args.shared_dir) if args.shared_dir else None
+
     print(f"Processing {args.sample}...")
+    if mesh_path:
+        print(f"Using mesh: {mesh_path}")
 
     gt_voxels = load_de_gt_voxels(sample_dir)
     print(f"DE gt_voxels: shape={gt_voxels.shape}, max={gt_voxels.max():.4f}")
     print(f"  tumor core (>0.5): {(gt_voxels > 0.5).sum():,} voxels")
 
-    import json
     tp = json.load(open(sample_dir / "tumor_params.json"))
     print(f"  source_type: {tp.get('source_type')}, foci: {len(tp.get('foci', []))}")
 
     output_path = output_dir / f"{args.sample}_3d_de_mcx_alignment.png"
-    render_comparison_3d(sample_dir, output_path)
+    render_comparison_3d(sample_dir, output_path, mesh_path, shared_dir=shared_dir)
     render_ortho_slices(sample_dir, output_path)
 
 

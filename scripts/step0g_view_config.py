@@ -7,12 +7,14 @@ This script:
 2. Computes surface normals from surface faces
 3. Runs TurntableCamera visibility analysis for all angles
 4. Generates visualization plots (XY, XZ, YZ projections per angle)
-5. Saves view_config.json to output/shared/
+5. Saves view_config.json to output directory
 
 Usage:
     python scripts/step0g_view_config.py
+    python scripts/step0g_view_config.py --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz --output-dir output/shared_mesh_20k
 """
 
+import argparse
 import json
 import logging
 import sys
@@ -22,10 +24,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fmt_simgen.view_config import TurntableCamera, get_visible_surface_nodes_from_mcx_depth
+from fmt_simgen.pipeline.shared import load_config_with_inheritance
+from fmt_simgen.subject import load_subject_manifest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -42,7 +45,7 @@ def load_mesh(mesh_path: str) -> dict:
     }
 
 
-def load_mcx_volume(bin_path: Path, shape: tuple = (104, 200, 190)) -> np.ndarray:
+def load_mcx_volume(bin_path: Path, shape: tuple[int, int, int]) -> np.ndarray:
     """Load MCX volume from binary file and convert to XYZ order.
     
     The binary file is stored in ZYX order (MCX convention).
@@ -111,16 +114,45 @@ def plot_visible_nodes_per_angle(
 
 
 def main() -> None:
-    config_path = Path("config/default.yaml")
-    mesh_path = Path("output/shared/mesh.npz")
-    output_dir = Path("output/shared")
+    parser = argparse.ArgumentParser(description="Step 0g: View Configuration and Visibility")
+    parser.add_argument(
+        "--mesh",
+        type=str,
+        default=None,
+        help="Mesh file path (default: output/shared/mesh.npz)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: output/shared/)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config/default.yaml",
+        help="Path to config YAML (default: config/default.yaml)",
+    )
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    output_dir = Path(args.output_dir) if args.output_dir else Path("output/shared")
+    mesh_path = Path(args.mesh) if args.mesh else output_dir / "mesh.npz"
+    
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load config
-    with open(config_path) as f:
-        full_config = yaml.safe_load(f)
+    logger.info(f"Mesh: {mesh_path}")
+    logger.info(f"Output: {output_dir}")
+
+    if not mesh_path.exists():
+        logger.error(f"Mesh file not found: {mesh_path}")
+        sys.exit(1)
+
+    full_config = load_config_with_inheritance(str(config_path))
+    subject = load_subject_manifest(full_config, output_dir)
 
     view_config = full_config.get("view_config", {})
+    view_config.setdefault("volume_center_world", subject.volume_center_world_mm.tolist())
     logger.info(f"View config: {view_config}")
 
     # Load mesh
@@ -152,7 +184,7 @@ def main() -> None:
     mcx_vol_path = output_dir / "mcx_volume_trunk.bin"
     if mcx_vol_path.exists():
         logger.info(f"Loading MCX volume from {mcx_vol_path}")
-        mcx_volume = load_mcx_volume(mcx_vol_path)
+        mcx_volume = load_mcx_volume(mcx_vol_path, subject.shape_zyx)
         logger.info(f"MCX volume shape: {mcx_volume.shape}")
         use_mcx_depth = True
     else:
@@ -161,7 +193,7 @@ def main() -> None:
 
     # Load exterior faces if available (for accurate normal computation)
     exterior_faces = surface_faces
-    trunk_mesh_path = output_dir / "digimouse_trunk_mesh.npz"
+    trunk_mesh_path = Path(args.mesh) if args.mesh else output_dir / "digimouse_trunk_mesh.npz"
     if trunk_mesh_path.exists():
         data = np.load(trunk_mesh_path)
         if "exterior_faces" in data:
@@ -171,8 +203,8 @@ def main() -> None:
     # Get visible nodes for all angles (with MCX depth occlusion)
     logger.info("Computing visibility for all angles (with depth occlusion)...")
     
-    volume_center_world = (19.0, 20.0, 10.4)
-    voxel_size = 0.2
+    volume_center_world = tuple(subject.volume_center_world_mm.tolist())
+    voxel_size = subject.voxel_size_mm
     
     all_visible = {}
     for angle in camera.angles:
@@ -249,6 +281,8 @@ def main() -> None:
         "detector_resolution": list(camera.detector_resolution),
         "projection_type": camera.projection_type,
         "fov_mm": camera.fov_mm,
+        "volume_center_world": list(volume_center_world),
+        "voxel_size_mm": float(voxel_size),
         "stats_per_angle": stats,
         "total_surface_nodes": total_surface,
         "union_visible_nodes": n_visible_union,

@@ -18,24 +18,24 @@ FMT-SimGen generates synthetic FMT datasets for training and evaluation of recon
 Key design features:
 - Tumors defined as **continuous analytic functions** (Gaussian spheres/ellipsoids) in 3D space
 - **Dual GT sampling** ensures node-level and voxel-level GT are perfectly aligned
-- Whole-body Digimouse atlas support with adaptive tetrahedral mesh generation
+- Subject-manifest driven geometry for Digimouse and new CT/segmentation inputs
 - **Dual-channel pipeline**: DE (physics-based) + MCX (wave-based) from shared `tumor_params.json`
 
 ## Quick Start
 
 ```bash
 # Verify imports
-uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera; print('OK')"
+uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera, SubjectManifest; print('OK')"
 
 # 1. Generate shared assets (once per atlas/mesh change)
-uv run python scripts/step0b_generate_mesh.py       # Tetrahedral mesh
+uv run python scripts/step0b_generate_mesh_cgalmesh.py --config config/default.yaml
 uv run python scripts/step0c_fem_matrix.py          # FEM system matrix
 uv run python scripts/step0d_voxel_grid.py          # Voxel grid
-uv run python scripts/step0f_mcx_volume.py          # MCX trunk volume binary
-uv run python scripts/step0g_view_config.py         # TurntableCamera config
+uv run python scripts/step0f_mcx_volume.py --config config/default.yaml
+uv run python scripts/step0g_view_config.py --config config/default.yaml
 
 # 2. Generate DE channel samples
-uv run python scripts/02_generate_dataset.py -n 50
+uv run python scripts/02_generate_dataset.py --config config/default.yaml -n 50
 
 # 3. (Optional) Run MCX channel on existing DE samples
 uv run python scripts/run_mcx_pipeline.py --samples_dir data/gaussian_1000/samples --projection_only
@@ -53,6 +53,7 @@ FMT-SimGen/
 │   └── *.yaml                    # Experiment configs (inherit from default)
 ├── fmt_simgen/
 │   ├── atlas/digimouse.py        # Digimouse atlas loading
+│   ├── subject.py                # SubjectManifest geometry contract
 │   ├── mesh/mesh_generator.py   # Tetrahedral mesh generation
 │   ├── physics/
 │   │   ├── optical_params.py     # Optical parameter management
@@ -80,11 +81,11 @@ FMT-SimGen/
 ### 1. Generate Shared Assets (once)
 
 ```bash
-uv run python scripts/step0b_generate_mesh.py
+uv run python scripts/step0b_generate_mesh_cgalmesh.py --config config/default.yaml
 uv run python scripts/step0c_fem_matrix.py
 uv run python scripts/step0d_voxel_grid.py
-uv run python scripts/step0f_mcx_volume.py
-uv run python scripts/step0g_view_config.py
+uv run python scripts/step0f_mcx_volume.py --config config/default.yaml
+uv run python scripts/step0g_view_config.py --config config/default.yaml
 ```
 
 This creates `output/shared/` containing mesh, FEM system matrix, voxel grid, MCX volume, and camera config.
@@ -105,12 +106,11 @@ Creates `data/{experiment}/samples/sample_XXXX/` directories, each containing:
 
 ```bash
 uv run python scripts/run_mcx_pipeline.py \
-  --samples_dir data/{experiment}/samples \
-  --simulation_only   # produces *.jnii fluence volumes
+  --samples_dir data/{experiment}/samples
 
 uv run python scripts/run_mcx_pipeline.py \
   --samples_dir data/{experiment}/samples \
-  --projection_only  # produces proj.npz from existing .jnii
+  --projection_only  # only produces proj.npz from existing .jnii
 ```
 
 ### 4. Verify Dataset
@@ -126,12 +126,35 @@ uv run python scripts/validate_dataset.py \
 All parameters in `config/default.yaml`. Experiment configs (e.g. `config/gaussian_1000.yaml`) inherit from default via `_base_` + recursive deep merge — do not duplicate blocks manually.
 
 Key sections:
+- `subject`: Optional subject manifest source for new CT/segmentation inputs; explicit `subject:` overrides old shared manifests
 - `atlas`: Digimouse path, tissue merge rules
 - `mesh`: Target node count, volume constraints
 - `physics`: Optical parameters (μ_a, μ_s', g, n) per tissue type
 - `tumor`: Number of foci distribution, shapes, size ranges, depth constraints
-- `mcx`: trunk offset, voxel size, volume shape (for MCX channel)
+- `mcx`: legacy Digimouse geometry defaults and MCX paths
 - `view_config`: turntable angles and pose (for MCX projections)
+
+Geometry rule: runtime shape, voxel size, volume center, extent, and tumor label roles must come from `fmt_simgen.subject.SubjectManifest` or `<shared_dir>/frame_manifest.json`. Legacy Digimouse defaults still resolve to `(190,200,104)` XYZ and `(104,200,190)` ZYX, but new code should not hardcode those values.
+
+Minimal new subject config:
+
+```yaml
+subject:
+  id: "mouse_ct_001"
+  format: "nifti"
+  segmentation_path: "/path/to/segmentation.nii.gz"
+  output_dir: "output/shared_mouse_ct_001"
+  target_voxel_size_mm: 0.2
+  crop_bbox_mm:
+    x: [0.0, 38.0]
+    y: [0.0, 40.0]
+    z: [0.0, 20.8]
+  label_mapping: {0: 0, 1: 1, 2: 2}
+  label_roles:
+    background_labels: [0]
+    allowed_tumor_labels: [1]
+    forbidden_tumor_labels: [0, 2]
+```
 
 ## Dependencies
 

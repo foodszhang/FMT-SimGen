@@ -1,5 +1,11 @@
 # Frame Literal Audit (H1)
 
+> Status: historical pre-manifest audit. The active geometry contract is now
+> `SubjectManifest` / `<shared_dir>/frame_manifest.json`; new code should not
+> replace literals with `frame_contract` imports. Instead, read runtime shape,
+> voxel size, extents, volume center, and label roles from
+> `fmt_simgen.subject.load_subject_manifest(config, shared_dir)`.
+
 **Generated**: 2026-04-21  
 **Total raw hits**: 954  
 **Unique (deduped) hits**: 859  

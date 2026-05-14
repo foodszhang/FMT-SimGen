@@ -9,42 +9,104 @@ FMT-SimGen generates synthetic Fluorescence Molecular Tomography (FMT) datasets 
 - **DE channel**: Surface fluence measurements (b), ground truth at FEM nodes (gt_nodes), ground truth at voxels (gt_voxels) — from analytic tumor definitions
 - **MCX channel**: Monte Carlo photon simulation fluence volumes (.jnii) + multi-angle 2D detector projections (proj.npz) — from MCX GPU simulation
 
+## Geometry Source Of Truth
+
+The pipeline is now **subject-manifest driven**. Do not treat Digimouse geometry as global truth.
+
+Runtime geometry must come from:
+- `fmt_simgen.subject.SubjectManifest`
+- `fmt_simgen.subject.load_subject_manifest(config, shared_dir)`
+- `{shared_dir}/frame_manifest.json`
+
+Rules:
+- Explicit `subject:` config wins over an existing `frame_manifest.json`.
+- Legacy Digimouse configs without `subject:` are still supported; the manifest is derived from `mcx.volume_shape`, `mcx.voxel_size_mm`, and `mcx.trunk_offset_mm`.
+- `fmt_simgen/frame_contract.py` is a legacy compatibility shim. New production code should not import it for shape, voxel size, volume center, or label semantics.
+- Never hardcode `190×200×104`, `[104,200,190]`, `0.2`, `[19,20,10.4]`, `[38,40,20.8]`, or label roles like `1=soft tissue` in new core code. Read them from `SubjectManifest`.
+
 ## Common Commands
 
 ```bash
 # Verify imports
-uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera; print('OK')"
+uv run python -c "from fmt_simgen import DatasetBuilder, TurntableCamera, SubjectManifest; print('OK')"
 
 # Asset generation (once per atlas/mesh change)
-uv run python scripts/step0b_generate_mesh_cgalmesh.py  # Tetrahedral mesh (cgalmesh backend)
+uv run python scripts/step0b_generate_mesh_cgalmesh.py --config config/default.yaml --maxvol 5.0 --radbound 2.8 --distbound 2.5 --output-name digimouse_trunk_mesh
 uv run python scripts/step0c_fem_matrix.py              # FEM system matrix
 uv run python scripts/step0d_voxel_grid.py              # Voxel grid
 uv run python scripts/step0e_v2_full_graph_laplacian.py  # Graph Laplacian
-uv run python scripts/step0f_mcx_volume.py             # MCX trunk volume binary
+uv run python scripts/step0f_mcx_volume.py --config config/default.yaml  # MCX trunk volume binary
+uv run python scripts/step0g_view_config.py --config config/default.yaml # camera/visibility assets
 
 # DE channel samples
-uv run python scripts/02_generate_dataset.py -n 50
+uv run python scripts/02_generate_dataset.py --config config/default.yaml -n 50
 
 # Full dual-channel (DE + MCX)
-uv run python scripts/run_all.py -n 50 --enable_mcx
+uv run python scripts/run_all.py --config config/default.yaml -n 50
 
 # MCX channel only (on existing DE samples)
 uv run python scripts/run_mcx_pipeline.py \
-  --samples_dir data/gaussian_1000/samples --simulation_only
+  --samples_dir data/gaussian_1000/samples
 uv run python scripts/run_mcx_pipeline.py \
   --samples_dir data/gaussian_1000/samples --projection_only
 ```
 
+## Multi-Mesh Configuration
+
+**Architecture**: Support multiple mesh configurations with independent output directories.
+
+```bash
+# Generate 20k mesh
+uv run python scripts/step0b_generate_mesh_cgalmesh.py \
+  --maxvol 5.0 --radbound 2.8 --distbound 2.5 \
+  --output-name digimouse_trunk_mesh_20k
+
+# Setup independent directory for 20k mesh
+mkdir -p output/shared_mesh_20k
+cp output/shared/digimouse_trunk_mesh_20k.npz output/shared_mesh_20k/
+cp output/shared/mcx_volume_trunk.bin output/shared_mesh_20k/
+cp output/shared/mcx_material.yaml output/shared_mesh_20k/
+
+# Generate assets with --mesh and --output-dir
+uv run python scripts/step0c_fem_matrix.py \
+  --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz \
+  --output-dir output/shared_mesh_20k
+
+uv run python scripts/step0g_view_config.py \
+  --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz \
+  --output-dir output/shared_mesh_20k
+
+# Generate samples with config file
+uv run python scripts/02_generate_dataset.py --config config/mesh_20k.yaml -n 50
+
+# Run MCX with --shared-dir
+uv run python scripts/run_mcx_pipeline.py \
+  --samples_dir data/mesh_20k_test/samples \
+  --shared-dir output/shared_mesh_20k
+```
+
+Every shared directory must have its own `frame_manifest.json`. The manifest keeps the mesh, MCX volume, GT voxel grid, and projection center in the same subject-local frame.
+
+**Scripts supporting --mesh/--output-dir**:
+- `step0c_fem_matrix.py`
+- `step0g_view_config.py`
+- `step0d_voxel_grid.py`
+- `step0e_v2_full_graph_laplacian.py`
+- `run_mcx_pipeline.py` (uses `--shared-dir`)
+- `verify_3d_de_mcx_alignment.py`
+- `de_surface_to_mcx_projection.py`
+
 ## Architecture: Dual-Channel Pipeline
 
-### Shared assets (Step 0) — generated once per atlas
+### Shared assets (Step 0) — generated once per subject/mesh
 | Step | Script | Output |
 |------|---------|--------|
-| 0b | `step0b_generate_mesh_cgalmesh.py` | `output/shared/mesh.npz` (cgalmesh, ~52k nodes, ~295k tets) |
+| 0b | `step0b_generate_mesh_cgalmesh.py` | `<shared_dir>/mesh.npz` or configured mesh file |
 | 0c | `step0c_fem_matrix.py` | `output/shared/system_matrix.*.npz` |
 | 0d | `step0d_voxel_grid.py` | `output/shared/voxel_grid.npz` |
 | 0e | `step0e_v2_full_graph_laplacian.py` | Graph Laplacian for regularization |
-| 0f | `step0f_mcx_volume.py` | `output/shared/mcx_volume_trunk.bin` (uint8 labels, ZYX order) |
+| 0f | `step0f_mcx_volume.py` | `<shared_dir>/mcx_volume_trunk.bin` (uint8 labels, ZYX order) |
+| 0g | `step0g_view_config.py` | `<shared_dir>/view_config.json`, `<shared_dir>/visible_mask.npy` |
 
 ### DE channel (Steps 1–4)
 - `DatasetBuilder` (`fmt_simgen/dataset/builder.py`) orchestrates per-sample generation
@@ -54,17 +116,19 @@ uv run python scripts/run_mcx_pipeline.py \
 | Step | Script | Module | Output |
 |------|--------|--------|--------|
 | 2m | `run_mcx_pipeline.py` (source generation) | `mcx_config.py` | `source-{id}.bin` |
-| 3m | `run_mcx_pipeline.py --simulation_only` | `mcx_runner.py` | `{id}.jnii` (3D fluence) |
+| 3m | `run_mcx_pipeline.py` | `mcx_runner.py` | `{id}.jnii` (3D fluence) |
 | 4m | `run_mcx_pipeline.py --projection_only` | `mcx_projection.py` | `proj.npz` (7-angle projections) |
 
 ### Dual-channel entry points
-- `scripts/run_all.py` — orchestrates DE + MCX with `--enable_mcx`
-- `scripts/run_mcx_pipeline.py` — standalone MCX (2m→3m→4m), supports `--simulation_only` and `--projection_only`
+- `scripts/run_all.py` — orchestrates DE + MCX with `--phase all`
+- `scripts/run_mcx_pipeline.py` — standalone MCX (2m→3m→4m), supports full run or `--projection_only`
 
 ## Data Flow
 
 ```
-分割文件 (npz/nii): shape=(190,200,104) @ 0.2mm, origin=(0,0,0)
+分割文件 (NIfTI/NPZ, pre-aligned to project axes)
+         ↓
+    subject config / frame_manifest.json
          ↓
     ┌─────────────────────────────────────────┐
     │  Step 0: 共享资源生成（一次性）           │
@@ -85,26 +149,23 @@ uv run python scripts/run_mcx_pipeline.py \
 
 ## Coordinate System (origin = (0, 0, 0))
 
-| Volume | Shape (XYZ) | Voxel size | Origin | 物理范围 |
-|--------|------------|------------|--------|---------|
-| 分割文件 | (190,200,104) | 0.2mm | (0,0,0) | X=[0,38], Y=[0,40], Z=[0,20.8] |
-| MCX Volume | (190,200,104) | 0.2mm | (0,0,0) | 同上 |
-| DE gt_voxels | (190,200,104) | 0.2mm | (0,0,0) | 同上 |
-| DE FEM mesh | — | — | (0,0,0) | X=[2.8,34.2], Y=[0.1,39.9], Z=[1.6,20.6] |
+The runtime world frame is `mcx_trunk_local_mm`: origin at the current subject volume bbox corner, units in mm, axes pre-aligned before entering the pipeline.
 
-**体素 [x,y,z] 中心物理坐标:** `(x+0.5)*0.2, (y+0.5)*0.2, (z+0.5)*0.2`
+| Value | Source |
+|-------|--------|
+| Shape XYZ | `subject.shape_xyz` |
+| Shape ZYX | `subject.shape_zyx` |
+| Voxel size | `subject.voxel_size_mm` |
+| Physical extent | `subject.volume_extents_mm` |
+| Projection center | `subject.volume_center_world_mm` |
+| Label roles | `subject.label_roles` |
 
-**关键常数 (frame_contract.py):**
+**Voxel [x,y,z] center physical coordinate:**
 ```python
-VOXEL_SIZE_MM          = 0.2
-TRUNK_GRID_SHAPE       = (190, 200, 104)  # MCX/DE 共用，XYZ 顺序
-VOLUME_EXTENTS_MM      = [38.0, 40.0, 20.8]  # = TRUNK_GRID_SHAPE * 0.2
-VOLUME_CENTER_WORLD    = [19.0, 20.0, 10.4]  # = VOLUME_EXTENTS_MM / 2，投影旋转中心
-CAMERA_DISTANCE_MM     = 200.0  # 相机到转台中心距离
-FOV_MM                 = 80.0   # 视野范围 (mm)
-DETECTOR_RESOLUTION    = (256, 256)  # 探测器分辨率 [宽, 高]
-ANGLES                 = [-90, -60, -30, 0, 30, 60, 90]  # 转台角度 (度)
+world_mm = (voxel_indices + 0.5) * subject.voxel_size_mm
 ```
+
+For legacy Digimouse only, the derived manifest values are shape XYZ `(190,200,104)`, shape ZYX `(104,200,190)`, voxel size `0.2`, and center `[19,20,10.4]`. Treat these as legacy defaults, not new-code constants.
 
 **MCX Pattern 坐标映射:**
 ```python
@@ -118,12 +179,10 @@ ANGLES                 = [-90, -60, -30, 0, 30, 60, 90]  # 转台角度 (度)
 **投影坐标变换 (mcx_projection.py):**
 ```python
 # 1. 体素中心 → 物理 mm (corner-origin frame)
-world_mm = (voxel_indices + 0.5) * VOXEL_SIZE_MM  # [X, Y, Z] mm
+world_mm = (voxel_indices + 0.5) * subject.voxel_size_mm  # [X, Y, Z] mm
 
 # 2. 移至以体积中心为原点
-world_mm[:, 0] -= VOLUME_CENTER_WORLD[0]  # 19.0
-world_mm[:, 1] -= VOLUME_CENTER_WORLD[1]  # 20.0
-world_mm[:, 2] -= VOLUME_CENTER_WORLD[2]  # 10.4
+world_mm -= subject.volume_center_world_mm
 
 # 3. 绕 Y 轴旋转 angle 度
 R = [[ cos_a, 0, sin_a],   # x' = x*cos + z*sin
@@ -134,7 +193,32 @@ R = [[ cos_a, 0, sin_a],   # x' = x*cos + z*sin
 #    同一像素多个体素时，保留最浅（最小depth）
 ```
 
-## MCX Volume 配置 (config/default.yaml)
+## Subject / MCX Volume Configuration
+
+New CT/segmentation inputs should add a `subject:` block. NIfTI and NPZ are supported; NIfTI must already be oriented/aligned to the project axes.
+
+```yaml
+subject:
+  id: "mouse_ct_001"
+  format: "nifti"  # or npz
+  segmentation_path: "/path/to/segmentation.nii.gz"
+  output_dir: "output/shared_mouse_ct_001"
+  target_voxel_size_mm: 0.2
+  crop_bbox_mm:
+    x: [0.0, 38.0]
+    y: [0.0, 40.0]
+    z: [0.0, 20.8]
+  label_mapping:
+    0: 0
+    1: 1
+    2: 2
+  label_roles:
+    background_labels: [0]
+    allowed_tumor_labels: [1]
+    forbidden_tumor_labels: [0, 2]
+```
+
+Legacy Digimouse configs can still use:
 
 ```yaml
 mcx:
@@ -163,7 +247,7 @@ view_config:
   platform_z_center: 4.0
 ```
 
-**Volume shape 计算:**
+**Legacy Digimouse volume shape calculation:**
 - 原始 atlas: (X=380, Y=400, Z=208) @ 0.1mm
 - Y 裁剪 [340, 740) → 400 voxels @ 0.1mm → 200 voxels @ 0.2mm
 - 2× 下采样后: (X=190, Y=200, Z=104)
@@ -176,7 +260,7 @@ data/{experiment}/samples/sample_XXXX/
 ├── tumor_params.json        # DE: tumor parameters
 ├── measurement_b.npy        # DE: surface fluence [N_d]
 ├── gt_nodes.npy             # DE: GT at FEM nodes [N_n]
-├── gt_voxels.npy            # DE: GT at voxels [190×200×104], origin=(0,0,0)
+├── gt_voxels.npy            # DE: GT at subject.shape_xyz, origin=(0,0,0)
 ├── source-XXXX.bin          # MCX: source pattern (ZYX order)
 ├── all_in_one.bin           # MCX: volume with tumor labeled as 15 (ZYX order)
 ├── sample_XXXX.jnii         # MCX: fluence volume (JNII format)
@@ -228,7 +312,7 @@ pattern.transpose(2, 1, 0).tofile(output_dir / f"source-{id}.bin")
 {
   "Domain": {
     "VolumeFile": "../../shared/mcx_volume_trunk.bin",  // 相对路径
-    "Dim": [104, 200, 190],          // ZYX 顺序 = TRUNK_GRID_SHAPE[::-1]
+    "Dim": "<subject.shape_zyx>",    // ZYX 顺序
     "OriginType": 1,                  // bbox corner 为原点
     "LengthUnit": 0.2,               // mm
     "Media": [...]                    // 来自 mcx_material.yaml
@@ -278,7 +362,7 @@ mcx -f {json_name} -a 1   # -a 1: overwrite 模式
 
 **读取转换:**
 ```python
-fluence_xyz = jdata.loadjd(jnii_path).transpose(2, 1, 0)  # ZYX → XYZ, shape (190,200,104)
+fluence_xyz = jdata.loadjd(jnii_path).transpose(2, 1, 0)  # ZYX → XYZ
 ```
 
 **幂等:** 若 `{session_id}.jnii` 已存在则跳过
@@ -286,7 +370,7 @@ fluence_xyz = jdata.loadjd(jnii_path).transpose(2, 1, 0)  # ZYX → XYZ, shape (
 ### mcx_projection.py — 正交投影生成
 **函数:** `project_mcx_fluence(fluence_xyz, angles, ...)` → `proj.npz`
 
-**输入:** `fluence_xyz` shape `(190, 200, 104)` float32 (XYZ 顺序)
+**输入:** `fluence_xyz` shape `subject.shape_xyz` float32 (XYZ 顺序)
 
 **相机几何:**
 | 参数 | 值 |
@@ -318,27 +402,38 @@ shape per key: (256, 256) float32
 | `compute_surface_normals()` | 计算表面法向量 |
 | `apply_pose_occlusion()` | 根据 pose (prone/supine) 遮挡 |
 
-### mcx_volume.py — 躯干体积生成
-**输入:** Digimouse atlas 分割文件 (0.1mm/voxel)
+### mcx_volume.py — subject 体积生成
+**输入:** subject segmentation (NIfTI/NPZ) 或 legacy Digimouse atlas
 **处理:**
-1. Y 方向裁剪: voxel [340, 740) → physical [34mm, 74mm]
-2. 2×2×2 majority-vote 下采样 → 0.2mm/voxel
-3. 原始 22 类 → 10 类组织映射
-**输出:** `output/shared/mcx_volume_trunk.bin` — uint8, shape `(104, 200, 190)` ZYX 顺序
+1. 按 `subject.crop_bbox_mm` 或 legacy `mcx.trunk_crop` 裁剪
+2. majority-vote 下采样
+3. 按 `subject.label_mapping` / `mcx.tissue_mapping` 映射组织
+4. 写出 `frame_manifest.json`
+
+**输出:** `<shared_dir>/mcx_volume_trunk.bin` — uint8, shape `subject.shape_zyx` ZYX 顺序
 
 ## Verification
 
 ```bash
-# 3D DE vs MCX alignment (requires all_in_one.bin in sample dir)
-for i in 0 1 2 3 4; do
-  uv run python scripts/verify_3d_de_mcx_alignment.py --sample sample_000$i
-done
+# 3D DE vs MCX alignment
+uv run python scripts/verify_3d_de_mcx_alignment.py \
+  --sample sample_0000 \
+  --samples_dir data/mesh_20k_test/samples \
+  --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz \
+  --output_dir output/visualizations/verification_20k
 
 # 2D projection comparison
-for i in 0 1 2 3 4; do
-  uv run python scripts/de_surface_to_mcx_projection.py --sample sample_000$i
-done
+uv run python scripts/de_surface_to_mcx_projection.py \
+  --sample sample_0000 \
+  --samples_dir data/mesh_20k_test/samples \
+  --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz \
+  --output_dir output/visualizations/verification_20k
 ```
+
+**Output visualizations**:
+- `{sample}_3d_de_mcx_alignment.png` - 3D mesh surface + tumor + measurement
+- `{sample}_3d_de_mcx_alignment_slices.png` - 2D slice comparison
+- `{sample}_de_mcx_surface.png` - DE→MCX surface projection comparison (7 rows × 7 angles)
 
 ## MCX Executable
 
@@ -348,7 +443,7 @@ MCX binary: `/mnt/f/win-pro/bin/mcx.exe`. Invoke via `subprocess.run(["mcx.exe",
 
 **Always** use `uv run python`, never system python or miniforge python:
 ```bash
-uv run python scripts/run_all.py -n 50 --enable_mcx
+uv run python scripts/run_all.py --config config/default.yaml -n 50 --phase all
 ```
 
 ## Code Style
@@ -370,6 +465,86 @@ depth_min_vox = int(1.0 / 0.1)          # = 9
 
 - See `AGENTS.md` for full style guide (imports, docstrings, data structures)
 
+## Data Dependencies
+
+### Multi-Mesh Configuration
+
+Each mesh configuration has an independent output directory:
+
+```
+output/
+├── shared/                    # Default 52k mesh
+│   ├── digimouse_trunk_mesh.npz
+│   ├── system_matrix.*.npz
+│   ├── visible_mask.npy
+│   ├── view_config.json
+│   ├── mcx_volume_trunk.bin
+│   └── mcx_material.yaml
+│
+└── shared_mesh_20k/           # 20k mesh (independent)
+    ├── digimouse_trunk_mesh_20k.npz
+    ├── system_matrix.*.npz
+    ├── visible_mask.npy
+    ├── view_config.json
+    ├── mcx_volume_trunk.bin
+    └── mcx_material.yaml
+```
+
+**Config file example** (`config/mesh_20k.yaml`):
+```yaml
+_base_: default.yaml
+
+mesh:
+  mesh_file: "output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz"
+  output_path: "output/shared_mesh_20k/"
+
+dataset:
+  num_samples: 3
+  experiment_name: "mesh_20k_test"
+```
+
+### Mesh Update Cascade
+
+**When mesh is updated, you MUST re-run:**
+
+```bash
+# Required
+uv run python scripts/step0c_fem_matrix.py --mesh <mesh_path> --output-dir <output_dir>
+uv run python scripts/step0g_view_config.py --mesh <mesh_path> --output-dir <output_dir>
+
+# Optional
+uv run python scripts/step0d_voxel_grid.py --mesh <mesh_path> --output-dir <output_dir>
+uv run python scripts/step0e_v2_full_graph_laplacian.py --mesh <mesh_path> --output-dir <output_dir>
+```
+
+**Reason**:
+- `step0c` generates M, K, C, B, F matrices dependent on mesh nodes/elements
+- `step0g` generates `visible_mask.npy` dependent on mesh surface nodes
+- Not re-running causes node count mismatch and index errors
+
+**System matrix files:**
+- `M.npz`, `K.npz`, `C.npz`, `B.npz`, `F.npz`, `index.npz` — **Required** for DE channel
+- `A.npz` — **Optional**, not used by `FEMSolver.forward()` (uses LU decomposition instead)
+
+## MCX Volume Loading
+
+**Critical**: `mcx_volume_trunk.bin` is stored in **ZYX order** but most functions expect **XYZ order**.
+
+```python
+# Correct loading
+from fmt_simgen.subject import load_subject_manifest
+
+subject = load_subject_manifest(config, shared_dir)
+vol = np.fromfile(shared_dir / "mcx_volume_trunk.bin", dtype=np.uint8)
+volume_zyx = vol.reshape(subject.shape_zyx)
+volume_xyz = volume_zyx.transpose(2, 1, 0)
+```
+
+**Files with correct handling**:
+- `scripts/step0g_view_config.py` — `load_mcx_volume()` 
+- `scripts/visualize_visibility_3d.py` — `load_mcx_volume()`
+- `fmt_simgen/dataset/builder.py` — frame consistency check
+
 ## Import Verification
 
 ```bash
@@ -377,7 +552,8 @@ uv run python -c "
 from fmt_simgen import (
     DigimouseAtlas, MeshGenerator, FEMSolver,
     OpticalParameterManager, TumorGenerator, TumorSample,
-    AnalyticFocus, DualSampler, DatasetBuilder, TurntableCamera
+    AnalyticFocus, DualSampler, DatasetBuilder, TurntableCamera,
+    SubjectManifest, VolumeSpec, load_subject_manifest
 )
 print('OK')
 "

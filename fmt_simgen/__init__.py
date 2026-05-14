@@ -15,6 +15,7 @@ from fmt_simgen.tumor.tumor_generator import TumorGenerator, TumorSample, Analyt
 from fmt_simgen.sampling.dual_sampler import DualSampler
 from fmt_simgen.dataset.builder import DatasetBuilder
 from fmt_simgen.view_config import TurntableCamera
+from fmt_simgen.subject import SubjectManifest, VolumeSpec, load_subject_manifest
 
 __all__ = [
     "DigimouseAtlas",
@@ -27,4 +28,7 @@ __all__ = [
     "DualSampler",
     "DatasetBuilder",
     "TurntableCamera",
+    "SubjectManifest",
+    "VolumeSpec",
+    "load_subject_manifest",
 ]

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 DE Surface → MCX Surface Interpolation → Projection Comparison
+
+Usage:
+    python scripts/de_surface_to_mcx_projection.py --sample sample_0000 --samples_dir data/small_uniform_5samples/samples
+    python scripts/de_surface_to_mcx_projection.py --sample sample_0000 --samples_dir data/mesh_20k_test/samples --mesh output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz
 """
 
 import sys
@@ -20,7 +24,9 @@ from fmt_simgen.frame_contract import VOLUME_CENTER_WORLD
 import matplotlib.pyplot as plt
 
 
-def resolve_shared_mesh_path() -> Path:
+def resolve_shared_mesh_path(mesh_path: Path = None) -> Path:
+    if mesh_path and mesh_path.exists():
+        return mesh_path
     candidates = [
         Path("output/shared/digimouse_trunk_mesh.npz"),
         Path("output/shared/mesh.npz"),
@@ -34,8 +40,8 @@ def resolve_shared_mesh_path() -> Path:
     )
 
 
-def load_de_surface_data(sample_dir: Path):
-    mesh = np.load(resolve_shared_mesh_path())
+def load_de_surface_data(sample_dir: Path, mesh_path: Path = None):
+    mesh = np.load(resolve_shared_mesh_path(mesh_path))
     nodes = mesh["nodes"]
     surface_idx = mesh["surface_node_indices"]
     surface_nodes = nodes[surface_idx]
@@ -51,8 +57,10 @@ def load_mcx_volume(sample_dir: Path) -> np.ndarray:
     return vol
 
 
-def load_label_volume() -> np.ndarray:
-    label_path = Path("output/shared/mcx_volume_trunk.bin")
+def load_label_volume(shared_dir: Path = None) -> np.ndarray:
+    if shared_dir is None:
+        shared_dir = Path("output/shared")
+    label_path = shared_dir / "mcx_volume_trunk.bin"
     if not label_path.exists():
         return None
     vol = np.fromfile(label_path, dtype=np.uint8)
@@ -212,6 +220,8 @@ def main():
     parser.add_argument("--sample", type=str, default="sample_0000")
     parser.add_argument("--samples_dir", type=str, default="data/small_uniform_5samples/samples")
     parser.add_argument("--output_dir", type=str, default="output/verification")
+    parser.add_argument("--mesh", type=str, default=None, help="Mesh file path (default: auto-detect)")
+    parser.add_argument("--shared-dir", type=str, default=None, help="Shared directory for mcx_volume_trunk.bin (default: output/shared)")
     parser.add_argument("--radius", type=float, default=3.0)
     args = parser.parse_args()
 
@@ -219,16 +229,21 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    mesh_path = Path(args.mesh) if args.mesh else None
+    shared_dir = Path(args.shared_dir) if args.shared_dir else None
+
     print(f"Processing {args.sample}...")
+    if mesh_path:
+        print(f"Using mesh: {mesh_path}")
 
     # Load data
-    surface_nodes, b = load_de_surface_data(sample_dir)
+    surface_nodes, b = load_de_surface_data(sample_dir, mesh_path)
     print(f"DE surface: {len(surface_nodes)} nodes, b range [{b.min():.4f}, {b.max():.4f}]")
 
     mcx_vol = load_mcx_volume(sample_dir)
     print(f"MCX volume: shape={mcx_vol.shape}, max fluence={mcx_vol.max():.2f}")
 
-    label_vol = load_label_volume()
+    label_vol = load_label_volume(shared_dir)
     if label_vol is not None:
         print(f"Label volume: shape={label_vol.shape}, non-zero={np.count_nonzero(label_vol)}")
         surface_mask = identify_body_surface_voxels(label_vol)

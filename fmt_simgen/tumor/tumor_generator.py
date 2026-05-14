@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
+from fmt_simgen.subject import LabelRoleSpec
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,7 @@ class TumorGenerator:
         gt_spacing_mm=None,  # voxel spacing of gt_voxels grid
         merged_voxel_volume=None,  # trunk-cropped merged atlas volume [X,Y,Z] at voxel_size_mm
         voxel_size_mm: float = 0.2,
+        label_roles: LabelRoleSpec | None = None,
     ):
         """Initialize tumor generator.
 
@@ -287,6 +289,7 @@ class TumorGenerator:
         self.gt_spacing_mm = gt_spacing_mm if gt_spacing_mm is not None else 0.2
         self.merged_voxel_volume = merged_voxel_volume
         self.voxel_size_mm = voxel_size_mm
+        self.label_roles = label_roles or LabelRoleSpec()
 
         self.regions = config.get("regions", ["dorsal", "lateral"])
         self.num_foci_dist = config.get(
@@ -409,7 +412,7 @@ class TumorGenerator:
         """
         from scipy.ndimage import distance_transform_edt
 
-        body_mask = vol != 0
+        body_mask = ~np.isin(vol, self.label_roles.background_labels)
         depth_mm = distance_transform_edt(body_mask, sampling=[voxel_size_mm] * 3)
         self._edt_depth_mm = depth_mm
 
@@ -454,31 +457,29 @@ class TumorGenerator:
         """U7-Fast: random position sampling in merged voxel space.
 
         Samples in merged voxel indices [X, Y, Z] then converts to trunk-local mm.
-        region: 'dorsal' (80%) or 'lateral' (20%) — sampling bias, not hard constraint.
-
-        Dorsal band: X in [40, 150], Z in [15, 80]  (centered in body, mid depth)
-        Lateral band: X in [5, 35] or [155, 185], Z in [20, 70]
+        Region bands are relative to the current subject volume, so non-Digimouse
+        subjects do not inherit fixed 190×200×104 assumptions.
 
         Returns center in trunk-local mm, or None if out of bounds.
         """
         vs = self.voxel_size_mm
         x_dim, y_dim, z_dim = self.merged_voxel_volume.shape
 
-        # Sampling regions in voxel space
+        # Sampling regions in voxel space. Defaults preserve the old sampling
+        # intent as relative bands: broad dorsal middle vs. left/right flanks.
         if region == "dorsal":
-            # Core dorsal: X broad, Y center, Z mid-body
-            x_lo, x_hi = 30, x_dim - 30
-            y_lo, y_hi = 20, y_dim - 20
-            z_lo, z_hi = 15, 80
+            x_lo, x_hi = int(0.16 * x_dim), int(0.84 * x_dim)
+            y_lo, y_hi = int(0.10 * y_dim), int(0.90 * y_dim)
+            z_lo, z_hi = int(0.15 * z_dim), int(0.77 * z_dim)
         else:  # lateral
             # Left or right flank
             side = self._rng.choice([-1, 1])
             if side == -1:
-                x_lo, x_hi = 5, 35
+                x_lo, x_hi = int(0.03 * x_dim), int(0.18 * x_dim)
             else:
-                x_lo, x_hi = x_dim - 35, x_dim - 5
-            y_lo, y_hi = 20, y_dim - 20
-            z_lo, z_hi = 20, 70
+                x_lo, x_hi = int(0.82 * x_dim), int(0.97 * x_dim)
+            y_lo, y_hi = int(0.10 * y_dim), int(0.90 * y_dim)
+            z_lo, z_hi = int(0.19 * z_dim), int(0.67 * z_dim)
 
         # Clamp to volume bounds first
         x_lo, x_hi = max(0, x_lo), min(x_dim, x_hi)
@@ -607,24 +608,28 @@ class TumorGenerator:
         if labels_in_sphere.size == 0:
             return True, None
 
-        # ── Rule A: no air ───────────────────────────────────────────
-        air_count = int(np.sum(labels_in_sphere == 0))
-        if air_count > 0:
+        # ── Rule A: no background/air ────────────────────────────────
+        background_count = int(np.isin(labels_in_sphere, self.label_roles.background_labels).sum())
+        if background_count > 0:
             if record_rejections:
                 self._reject_stats["reject_air"] += 1
             return False, "air"
 
-        # ── Rule B: no bone ──────────────────────────────────────────
-        bone_count = int(np.sum(labels_in_sphere == 2))
-        if bone_count > 0:
+        # ── Rule B: no forbidden labels (legacy: bone) ────────────────
+        forbidden = tuple(
+            label for label in self.label_roles.forbidden_tumor_labels
+            if label not in self.label_roles.background_labels
+        )
+        forbidden_count = int(np.isin(labels_in_sphere, forbidden).sum()) if forbidden else 0
+        if forbidden_count > 0:
             if record_rejections:
                 self._reject_stats["reject_bone"] += 1
             return False, "bone"
 
-        # ── Rule C: soft tissue majority ─────────────────────────────
-        soft_count = int(np.sum(labels_in_sphere == 1))
-        soft_frac = soft_count / len(labels_in_sphere)
-        if soft_frac < 0.5:
+        # ── Rule C: allowed tissue majority ──────────────────────────
+        allowed_count = int(np.isin(labels_in_sphere, self.label_roles.allowed_tumor_labels).sum())
+        allowed_frac = allowed_count / len(labels_in_sphere)
+        if allowed_frac < 0.5:
             if record_rejections:
                 self._reject_stats["reject_soft_tissue_frac"] += 1
             return False, "soft_tissue_frac"
@@ -639,7 +644,8 @@ class TumorGenerator:
             # Fallback: use Z position relative to body surface estimate
             depth_mm = cz * vs - 1.8  # body surface at Z=1.8mm trunk
 
-        if not (2.0 <= depth_mm <= 6.5):
+        depth_lo, depth_hi = self.depth_range
+        if not (float(depth_lo) <= depth_mm <= float(depth_hi)):
             if record_rejections:
                 self._reject_stats["reject_depth"] += 1
             return False, "depth"

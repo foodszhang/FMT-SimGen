@@ -13,6 +13,9 @@ Usage:
     # Full MCX pipeline on existing samples (auto-generates source configs if missing)
     python scripts/run_mcx_pipeline.py --samples_dir data/gaussian_1000/samples
 
+    # With custom shared directory for view_config.json
+    python scripts/run_mcx_pipeline.py --samples_dir data/mesh_20k_test/samples --shared-dir output/shared_mesh_20k
+
     # Projection only (if .jnii files already exist)
     python scripts/run_mcx_pipeline.py --samples_dir data/gaussian_1000/samples --projection_only
 
@@ -28,6 +31,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -46,21 +50,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_shared_config() -> dict:
+def load_shared_config(shared_dir: Path = None) -> dict:
     """Load the full config (mcx + view_config sections) for standalone CLI use.
 
-    Reads ``config/default.yaml`` and merges ``output/shared/view_config.json``
+    Reads ``config/default.yaml`` and merges ``{shared_dir}/view_config.json``
     into ``config["view_config"]``.
+
+    Parameters
+    ----------
+    shared_dir : Path, optional
+        Shared directory containing view_config.json. Default: output/shared/
     """
     config_path = Path(__file__).parent.parent / "config" / "default.yaml"
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
 
-    view_json_path = Path("output/shared/view_config.json")
+    if shared_dir is None:
+        shared_dir = Path("output/shared")
+
+    view_json_path = shared_dir / "view_config.json"
     if view_json_path.exists():
-        import json
         with open(view_json_path, "r") as f:
             cfg["view_config"] = json.load(f)
+    cfg.setdefault("mesh", {})["output_path"] = str(shared_dir)
+    cfg.setdefault("mcx", {})["volume_path"] = str(shared_dir / "mcx_volume_trunk.bin")
+    cfg.setdefault("mcx", {})["material_path"] = str(shared_dir / "mcx_material.yaml")
 
     return cfg
 
@@ -74,6 +88,12 @@ def main() -> None:
         type=str,
         required=True,
         help="Root directory containing sample subdirectories",
+    )
+    parser.add_argument(
+        "--shared-dir",
+        type=str,
+        default=None,
+        help="Shared directory containing view_config.json (default: output/shared/)",
     )
     parser.add_argument(
         "--projection_only",
@@ -125,14 +145,16 @@ def main() -> None:
         sys.stderr.write(f"Error: samples_dir not found: {samples_dir}\n")
         sys.exit(2)
 
+    shared_dir = Path(args.shared_dir) if args.shared_dir else Path("output/shared")
     skip_existing = args.skip_existing and not args.no_skip
 
     # Load config for standalone CLI (reads default.yaml + view_config.json)
-    config = load_shared_config()
+    config = load_shared_config(shared_dir)
 
     logger.info(
-        "run_mcx_pipeline (standalone): samples_dir=%s, projection_only=%s, force_mcx=%s, max_workers=%d",
+        "run_mcx_pipeline (standalone): samples_dir=%s, shared_dir=%s, projection_only=%s, force_mcx=%s, max_workers=%d",
         samples_dir,
+        shared_dir,
         args.projection_only,
         args.force_mcx,
         args.max_workers,

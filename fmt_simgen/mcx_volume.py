@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from fmt_simgen.frame_contract import VOXEL_SIZE_MM
+from fmt_simgen.subject import SubjectManifest, load_segmentation_labels, subject_manifest_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,10 @@ def crop_and_downsample(
     y_start: int,
     y_end: int,
     downsample_factor: int = 2,
+    x_start: int = 0,
+    x_end: int | None = None,
+    z_start: int = 0,
+    z_end: int | None = None,
 ) -> np.ndarray:
     """Crop torso region and downsample.
 
@@ -162,8 +166,9 @@ def crop_and_downsample(
     Returns:
         Downsampled volume, shape (X/df, Y/df, Z/df) in XYZ order.
     """
-    # Crop Y dimension (columns in numpy indexing)
-    cropped = labels[:, y_start:y_end, :]
+    x_end = labels.shape[0] if x_end is None else x_end
+    z_end = labels.shape[2] if z_end is None else z_end
+    cropped = labels[x_start:x_end, y_start:y_end, z_start:z_end]
     logger.info(f"Cropped shape (XYZ): {cropped.shape}")
 
     # Majority-vote 2x2x2 block downsample
@@ -205,18 +210,30 @@ def prepare_mcx_volume(
     """
     mcx_config = config.get("mcx", {})
     physics_config = config.get("physics", {})
+    subject = subject_manifest_from_config(config)
     downsample_factor = mcx_config.get("downsample_factor", 2)
 
-    labels, voxel_size = load_atlas_labels(atlas_path)
+    labels, voxel_size = load_segmentation_labels(
+        atlas_path, subject.label_key or config.get("subject", {}).get("label_key")
+    )
 
-    # Y crop parameters from config (pixel indices at original voxel size)
-    # For Digimouse: y_start=340, y_end=740 at 0.1mm → physical Y=[34,74]mm
-    y_start = int(mcx_config.get("trunk_crop_y_start", 340))
-    y_end = int(mcx_config.get("trunk_crop_y_end", 740))
+    crop_cfg = mcx_config.get("trunk_crop", {})
+    y_start = int(mcx_config.get("trunk_crop_y_start", crop_cfg.get("y_start", 340)))
+    y_end = int(mcx_config.get("trunk_crop_y_end", crop_cfg.get("y_end", 740)))
+    x_start, x_end = 0, labels.shape[0]
+    z_start, z_end = 0, labels.shape[2]
+    if subject.crop_bbox_mm is not None:
+        bbox = subject.crop_bbox_mm
+        x_start = int(round(float(bbox["x"][0]) / voxel_size))
+        x_end = int(round(float(bbox["x"][1]) / voxel_size))
+        y_start = int(round(float(bbox["y"][0]) / voxel_size))
+        y_end = int(round(float(bbox["y"][1]) / voxel_size))
+        z_start = int(round(float(bbox["z"][0]) / voxel_size))
+        z_end = int(round(float(bbox["z"][1]) / voxel_size))
     original_shape = labels.shape
     logger.info(f"Original atlas shape: {original_shape}")
 
-    tissue_mapping = get_tissue_mapping(mcx_config)
+    tissue_mapping = subject.label_mapping or get_tissue_mapping(mcx_config)
     num_tissues = mcx_config.get("num_tissues", 10)
 
     labels_mcx = np.zeros_like(labels)
@@ -230,7 +247,22 @@ def prepare_mcx_volume(
         f"MCX class range after mapping: {unique_mcx.min()} - {unique_mcx.max()}"
     )
 
-    volume_xyz = crop_and_downsample(labels_mcx, y_start, y_end, downsample_factor)
+    volume_xyz = crop_and_downsample(
+        labels_mcx,
+        y_start,
+        y_end,
+        downsample_factor,
+        x_start=x_start,
+        x_end=x_end,
+        z_start=z_start,
+        z_end=z_end,
+    )
+    if volume_xyz.shape != subject.shape_xyz:
+        logger.warning(
+            "MCX volume shape %s differs from manifest shape %s; using generated shape",
+            volume_xyz.shape,
+            subject.shape_xyz,
+        )
 
     volume_zyx = volume_xyz.transpose(2, 1, 0)
     logger.info(f"MCX volume shape (ZYX): {volume_zyx.shape}")

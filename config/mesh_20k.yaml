@@ -1,0 +1,17 @@
+# 20k Mesh Test Configuration
+# Inherits from default.yaml and overrides mesh path
+
+_base_: default.yaml
+
+mesh:
+  mesh_file: "output/shared_mesh_20k/digimouse_trunk_mesh_20k.npz"
+  output_path: "output/shared_mesh_20k/"
+
+mcx:
+  volume_path: "output/shared_mesh_20k/mcx_volume_trunk.bin"
+  material_path: "output/shared_mesh_20k/mcx_material.yaml"
+
+dataset:
+  num_samples: 3
+  experiment_name: "mesh_20k_test"
+  output_path: "data/"

@@ -154,6 +154,12 @@ def main() -> None:
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--shared-dir",
+        type=str,
+        default=None,
+        help="Shared directory for view_config.json and mcx_volume (default: output/shared/)",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -168,17 +174,27 @@ def main() -> None:
     # Merge view_config.json only when config has no view_config section.
     # This mirrors the priority in mcx_pipeline.py: YAML config wins,
     # view_config.json is only a fallback for standalone CLI use.
+    mesh_output = config.get("mesh", {}).get("output_path", "output/shared")
+    shared_dir = Path(args.shared_dir) if args.shared_dir else project_root / mesh_output
     if "view_config" not in config or not config["view_config"].get("angles"):
-        view_json_path = project_root / "output" / "shared" / "view_config.json"
+        view_json_path = shared_dir / "view_config.json"
         if view_json_path.exists():
             with open(view_json_path, "r") as f:
                 config["view_config"] = json.load(f)
-                logger.info("view_config: loaded from output/shared/view_config.json (fallback)")
+                logger.info("view_config: loaded from %s (fallback)", view_json_path)
         else:
             logger.warning(
-                "view_config not in config and view_config.json not found. "
-                "Camera-based filtering may be missing."
+                "view_config not in config and %s not found. "
+                "Camera-based filtering may be missing.",
+                view_json_path
             )
+
+    # Update MCX paths if shared-dir is specified
+    if args.shared_dir:
+        if "mcx" in config:
+            config["mcx"]["volume_path"] = f"{args.shared_dir}/mcx_volume_trunk.bin"
+            config["mcx"]["material_path"] = f"{args.shared_dir}/mcx_material.yaml"
+            logger.info("MCX paths updated to use shared-dir: %s", args.shared_dir)
 
     experiment_name = config.get("dataset", {}).get("experiment_name", "default")
     samples_dir = derive_samples_dir(config)

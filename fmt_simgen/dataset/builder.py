@@ -28,11 +28,7 @@ from fmt_simgen.physics.optical_params import OpticalParameterManager
 from fmt_simgen.physics.fem_solver import FEMSolver
 from fmt_simgen.tumor.tumor_generator import TumorGenerator
 from fmt_simgen.sampling.dual_sampler import DualSampler, VoxelGridConfig
-from fmt_simgen.frame_contract import (
-    VOXEL_SIZE_MM,
-    TRUNK_GRID_SHAPE,
-    VOLUME_CENTER_WORLD,
-)
+from fmt_simgen.subject import SubjectManifest, load_subject_manifest
 
 
 @dataclass
@@ -64,6 +60,9 @@ class DatasetBuilder:
         self.tumor_config = config.get("tumor", {})
         self.dataset_config = config.get("dataset", {})
         self.quality_config = config.get("quality_filter", {})
+        self.subject: SubjectManifest = load_subject_manifest(
+            config, self.mesh_config.get("output_path", "output/shared")
+        )
 
         self.atlas: Optional[DigimouseAtlas] = None
         self.mesh_generator: Optional[MeshGenerator] = None
@@ -86,9 +85,9 @@ class DatasetBuilder:
         Dict[str, Path]
             Paths to generated asset files.
         """
-        default_output = Path("output/shared")
-        mesh_path = Path(self.mesh_config.get("output_path", str(default_output)))
-        mesh_file = Path(self.mesh_config.get("mesh_file", str(default_output / "mesh.npz")))
+        mesh_output_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        mesh_path = mesh_output_path
+        mesh_file = Path(self.mesh_config.get("mesh_file", str(mesh_output_path / "mesh.npz")))
         matrix_file = mesh_path / "system_matrix"
 
         # ── Step 0: Atlas nodes for TumorGenerator KDTree (before any rebase) ─
@@ -114,8 +113,8 @@ class DatasetBuilder:
                 surface_node_indices=self._mesh_data.surface_node_indices,
                 interface_faces=self._mesh_data.interface_faces,
             )
-            # Also save to output/shared/ where DU2Vox expects the mesh
-            shared_mesh = Path("output/shared/mesh.npz")
+            # Also save to shared directory where DU2Vox expects the mesh
+            shared_mesh = mesh_output_path / "mesh.npz"
             shared_mesh.parent.mkdir(parents=True, exist_ok=True)
             np.savez(
                 shared_mesh,
@@ -207,8 +206,9 @@ class DatasetBuilder:
         nodes = data["nodes"].astype(np.float64)
 
         # Mesh is already in trunk-local frame (from step0b_generate_mesh_cgalmesh.py)
-        # Always copy manifest to mesh directory (assets/mesh/) for build_samples
-        manifest_path = Path("output/shared/frame_manifest.json")
+        # Always copy manifest to mesh directory for build_samples
+        mesh_output_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        manifest_path = mesh_output_path / "frame_manifest.json"
         mesh_dir_manifest = mesh_path.parent / "frame_manifest.json"
         if manifest_path.exists() and manifest_path != mesh_dir_manifest:
             import shutil
@@ -252,25 +252,23 @@ class DatasetBuilder:
         Checks that mesh node bbox and mcx_volume body bbox agree within 2mm
         per axis. This prevents frame regress silently.
         """
-        from fmt_simgen.frame_contract import (
-            VOXEL_SIZE_MM, VOLUME_EXTENTS_MM, assert_in_trunk_bbox,
-        )
         import logging
         logger = logging.getLogger(__name__)
 
         # Load mcx_volume_trunk.bin (ZYX order)
-        mcx_bin = Path("output/shared/mcx_volume_trunk.bin")
+        mesh_output_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        mcx_bin = mesh_output_path / "mcx_volume_trunk.bin"
         if not mcx_bin.exists():
             logger.warning("mcx_volume_trunk.bin not found — skipping frame check")
             return
 
         mcx_raw = np.fromfile(mcx_bin, dtype=np.uint8)
-        mcx_zyx = mcx_raw.reshape(TRUNK_GRID_SHAPE[::-1])  # ZYX = (104, 200, 190)
-        mcx_xyz = mcx_zyx.transpose(2, 1, 0)  # → TRUNK_GRID_SHAPE XYZ
+        mcx_zyx = mcx_raw.reshape(self.subject.shape_zyx)
+        mcx_xyz = mcx_zyx.transpose(2, 1, 0)
 
         # mcx body voxel indices → trunk-local mm
         mcx_body_idx = np.argwhere(mcx_xyz > 0)  # (M, 3) XYZ voxel indices
-        mcx_body_mm = mcx_body_idx.astype(np.float64) * VOXEL_SIZE_MM
+        mcx_body_mm = mcx_body_idx.astype(np.float64) * self.subject.voxel_size_mm
 
         mesh_nodes = self._mesh_data.nodes  # (N, 3) trunk-local mm
 
@@ -292,8 +290,11 @@ class DatasetBuilder:
                 f"mesh=[{m_lo:.2f},{m_hi:.2f}] mcx=[{v_lo:.2f},{v_hi:.2f}]"
             )
 
-        assert_in_trunk_bbox(mesh_nodes, tol_mm=3.0)
-        assert_in_trunk_bbox(mcx_body_mm, tol_mm=0.5)
+        extents = self.subject.volume_extents_mm
+        assert (mesh_nodes.min(axis=0) >= -3.0).all()
+        assert (mesh_nodes.max(axis=0) <= extents + 3.0).all()
+        assert (mcx_body_mm.min(axis=0) >= -0.5).all()
+        assert (mcx_body_mm.max(axis=0) <= extents + 0.5).all()
         logger.info("✅ Frame consistency verified: mesh ↔ mcx_volume aligned within 2mm")
 
     def _write_frame_manifest(self) -> None:
@@ -307,17 +308,16 @@ class DatasetBuilder:
         mesh.npz is saved in mcx_trunk_local_mm frame (rebase done at write time).
         Also syncs to assets/mesh/ (where the mesh files live).
         """
-        # ── Source of truth: frame_contract.py ──────────────────────────────────
-        voxel_size: float        = VOXEL_SIZE_MM                  # 0.2
-        grid_shape_xyz: tuple    = TRUNK_GRID_SHAPE               # (190, 200, 104)
-        vol_center: np.ndarray   = VOLUME_CENTER_WORLD             # [19, 20, 10.4]
+        voxel_size = self.subject.voxel_size_mm
+        grid_shape_xyz = self.subject.shape_xyz
+        vol_center = self.subject.volume_center_world_mm
 
         # self._mesh_data.nodes is trunk-local (rebase done in build_shared_assets)
         nodes_trunk: np.ndarray = self._mesh_data.nodes.astype(np.float64)
 
-        # Always use output/shared/ as the canonical manifest location
-        shared_dir: Path = Path("output/shared")
-        manifest_path: Path = shared_dir / "frame_manifest.json"
+        # Use mesh output path as the canonical shared directory
+        shared_dir = Path(self.mesh_config.get("output_path", "output/shared"))
+        manifest_path = shared_dir / "frame_manifest.json"
 
         # Preserve existing frame tag (load path may have updated it)
         if manifest_path.exists():
@@ -329,28 +329,31 @@ class DatasetBuilder:
             fem_mesh_frame = "mcx_trunk_local_mm"
 
         # gt voxel grid: 和MCX atlas crop一致
-        voxel_spacing: float = self.dataset_config.get("voxel_spacing", 0.2)
-        # DE voxel grid: origin=(0,0,0) in trunk-local, shape=[190, 200, 104]
+        voxel_spacing: float = self.dataset_config.get(
+            "voxel_spacing", self.subject.voxel_size_mm
+        )
         offset: list = [0.0, 0.0, 0.0]
-        shape_gt: list = [190, 200, 104]
+        shape_gt: list = list(self.subject.shape_xyz)
 
-        trunk_size: np.ndarray = np.array([38.0, 40.0, 20.8])
         manifest: dict = {
+            **self.subject.to_dict(),
             "version": 2,
-            "world_frame": "mcx_trunk_local_mm",
             "frame_contract": {
                 "voxel_size_mm": float(voxel_size),
                 "grid_shape_xyz": list(grid_shape_xyz),
                 "volume_center_world_mm": vol_center.tolist(),
-                "volume_extents_mm": trunk_size.tolist(),
+                "volume_extents_mm": self.subject.volume_extents_mm.tolist(),
                 "generated_by": "fmt_simgen.dataset.builder.build_shared_assets",
             },
             "mcx_volume": {
                 "shape_xyz": list(grid_shape_xyz),
+                "shape_zyx": list(self.subject.shape_zyx),
                 "voxel_size_mm": float(voxel_size),
+                "origin_world_mm": [0.0, 0.0, 0.0],
+                "extent_mm": self.subject.volume_extents_mm.tolist(),
                 "bbox_world_mm": {
                     "min": [0.0, 0.0, 0.0],
-                    "max": trunk_size.tolist(),
+                    "max": self.subject.volume_extents_mm.tolist(),
                 },
             },
             "fem_mesh": {
@@ -401,7 +404,9 @@ class DatasetBuilder:
 
         self._ensure_setup()
 
-        voxel_spacing = self.dataset_config.get("voxel_spacing", VOXEL_SIZE_MM)
+        voxel_spacing = self.dataset_config.get(
+            "voxel_spacing", self.subject.voxel_size_mm
+        )
         roi_size = self.dataset_config.get("voxel_grid_roi_size_mm", 30.0)
 
         # Experiment-isolated output: data/{experiment_name}/samples/
@@ -414,17 +419,8 @@ class DatasetBuilder:
 
         # ================== 统一到 mcx_trunk_local_mm frame ==================
         # Mesh nodes are already in trunk-local frame (from step0b_generate_mesh_cgalmesh.py)
-        mcx_cfg = self.config.get("mcx", {})
-        if not mcx_cfg:
-            raise ValueError("config.mcx 必填")
-        trunk_voxel_size = float(mcx_cfg["voxel_size_mm"])  # 0.2
-        vs_zyx = mcx_cfg["volume_shape"]
-        volume_extents = np.array(
-            [vs_zyx[2] * trunk_voxel_size,  # X
-             vs_zyx[1] * trunk_voxel_size,  # Y
-             vs_zyx[0] * trunk_voxel_size],  # Z
-            dtype=np.float64,
-        )  # ≈ [38.0, 40.0, 20.8]
+        trunk_voxel_size = self.subject.voxel_size_mm
+        volume_extents = self.subject.volume_extents_mm
 
         nodes_trunk = self._mesh_data.nodes.astype(np.float64)
 
@@ -436,11 +432,11 @@ class DatasetBuilder:
         print(f"  [FRAME] {inside_ratio*100:.1f}% nodes inside MCX bbox.")
 
         # 3) Load merged voxel volume for organ constraint (same as MCX trunk volume)
-        merged_vol_path = Path("output/shared/mcx_volume_trunk.bin")
+        mesh_output_path = Path(self.mesh_config.get("output_path", "output/shared"))
+        merged_vol_path = mesh_output_path / "mcx_volume_trunk.bin"
         if merged_vol_path.exists():
             merged_vol_raw = np.fromfile(merged_vol_path, dtype=np.uint8)
-            # volume_shape is ZYX from config, transpose to XYZ for [X,Y,Z] indexing
-            merged_vol_xyz = merged_vol_raw.reshape(vs_zyx).transpose(2, 1, 0)
+            merged_vol_xyz = merged_vol_raw.reshape(self.subject.shape_zyx).transpose(2, 1, 0)
             print(
                 "  Loaded merged voxel volume (XYZ): "
                 f"{merged_vol_xyz.shape}, dtype={merged_vol_xyz.dtype}"
@@ -451,8 +447,8 @@ class DatasetBuilder:
 
         # 4) DE voxel grid: 和分割文件/MCX volume 一致，origin=(0,0,0)
         node_min = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        mcx_voxel_size = 0.2
-        mcx_shape = np.array([190, 200, 104])
+        mcx_voxel_size = self.subject.voxel_size_mm
+        mcx_shape = np.asarray(self.subject.shape_xyz, dtype=np.int64)
         shape = tuple(int(s) for s in mcx_shape)
         roi_size = float((mcx_shape * mcx_voxel_size).max())  # for compatibility
 
@@ -488,6 +484,7 @@ class DatasetBuilder:
             gt_spacing_mm=voxel_spacing,  # gt_voxels spacing
             merged_voxel_volume=merged_vol_xyz,  # trunk-cropped merged atlas [X,Y,Z]
             voxel_size_mm=trunk_voxel_size,  # 0.2mm, same as MCX
+            label_roles=self.subject.label_roles,
         )
 
         dual_sampler = DualSampler(
@@ -861,7 +858,13 @@ class DatasetBuilder:
 
     def _setup_mesh_generator(self) -> None:
         """Setup mesh generator."""
-        self.mesh_generator = MeshGenerator(self.mesh_config)
+        mesh_config = dict(self.mesh_config)
+        if self.subject.crop_bbox_mm is not None and "trunk_bbox_atlas" not in mesh_config:
+            mesh_config["trunk_bbox_atlas"] = {
+                axis: tuple(float(v) for v in bounds)
+                for axis, bounds in self.subject.crop_bbox_mm.items()
+            }
+        self.mesh_generator = MeshGenerator(mesh_config)
 
     def _setup_optical_manager(self) -> None:
         """Setup optical parameter manager."""

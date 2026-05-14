@@ -14,7 +14,6 @@ from typing import Dict, Union
 import numpy as np
 import yaml
 
-from fmt_simgen.frame_contract import TRUNK_GRID_SHAPE
 from fmt_simgen.mcx_source import tumor_params_to_mcx_pattern
 
 logger = logging.getLogger(__name__)

@@ -1,75 +1,180 @@
-# FMT-SimGen × DU2Vox 坐标系规范 v1
+# FMT-SimGen 坐标系规范 v2
 
-## 0. 唯一的世界坐标系：`mcx_trunk_local_mm`
+## 0. 核心规则
 
-- **原点**：MCX volume 的 voxel(0,0,0) 角点
-- **单位**：毫米 (mm)
-- **轴向**：+X = 右, +Y = 后（tail 方向）, +Z = 背 (dorsal)
-- **范围**：X∈[0, 38], Y∈[0, 40], Z∈[0, 20.8]
-- **与 Digimouse atlas 的关系**：
-  `world_mm = atlas_voxel * 0.1 − [0, 34, 0]` (from `TRUNK_OFFSET_ATLAS_MM`)
+当前主流程是 **Subject Manifest 驱动**。不要把 Digimouse 的固定几何当成全局事实。
 
-所有以下数据**必须**在这个 frame 下：
-mesh.nodes / gt_nodes 的隐式坐标 / gt_voxels offset / tumor_params.foci[i].center / MCX source position (只是换算成 voxel)。
+权威来源：
+- `fmt_simgen.subject.SubjectManifest`
+- `fmt_simgen.subject.load_subject_manifest(config, shared_dir)`
+- `<shared_dir>/frame_manifest.json`
 
-## 1. MCX 体素 ↔ 世界坐标
-- `voxel_xyz = world_mm / 0.2`（voxel_size = 0.2 mm, corner-aligned）
-- MCX `.bin` 的 shape 是 ZYX = `[104, 200, 190]`（X-fastest）
-- MCX source pos 传给 mcx 的值单位**始终是 voxel**，不管 LengthUnit
+legacy 兼容：
+- 没有 `subject:` 配置时，Digimouse 默认值由 `mcx.volume_shape`、`mcx.voxel_size_mm`、`mcx.trunk_offset_mm` 派生。
+- `fmt_simgen/frame_contract.py` 只保留 legacy 兼容常量。新代码不得从这里读取运行时 shape、voxel size、volume center 或 label roles。
+- 如果 config 中显式存在 `subject:`，以 `subject:` 为准，不被 shared 目录里的旧 manifest 覆盖。
 
-## 2. `frame_manifest.json` (output/shared/)
-权威元数据，两边代码**只读不写**以外的地方都必须以它为准：
+## 1. 世界坐标系：`mcx_trunk_local_mm`
+
+每个 subject 都有自己的 trunk-local frame：
+- 原点：当前 subject volume bbox 的角点，即 voxel `[0,0,0]` 的 corner。
+- 单位：毫米。
+- 轴向：输入 CT/分割必须在进入主流程前预对齐到项目约定轴向。
+- 范围：不是固定值；由 `subject.volume_extents_mm` 决定。
+
+所有以下数据必须使用同一个 subject-local frame：
+- `mesh.npz` 的 `nodes`
+- `gt_nodes.npy` 对应的隐式坐标
+- `gt_voxels.npy` 的 grid offset/spacing/shape
+- `tumor_params.json` 中 `foci[i].center`
+- MCX source pattern 的 origin，换算到 voxel 后写入 JSON `Pos`
+- MCX/DE 投影时使用的旋转中心
+
+## 2. Manifest 字段
+
+典型 `frame_manifest.json`：
 
 ```json
 {
-  "version": 2,
+  "subject_id": "digimouse_legacy",
   "world_frame": "mcx_trunk_local_mm",
-  "config_hash": "a77e7f8e41ade52c",   // from fmt_simgen.config.CONFIG_HASH
-  "atlas_to_world_offset_mm": [0, 34, 0],  // from TRUNK_OFFSET_ATLAS_MM
+  "output_dir": "output/shared",
+  "atlas_to_world_offset_mm": [0.0, 34.0, 0.0],
   "mcx_volume": {
     "shape_xyz": [190, 200, 104],
+    "shape_zyx": [104, 200, 190],
     "voxel_size_mm": 0.2,
-    "bbox_world_mm": {"min": [0,0,0], "max": [38.0, 40.0, 20.8]}
+    "origin_world_mm": [0.0, 0.0, 0.0],
+    "extent_mm": [38.0, 40.0, 20.8],
+    "bbox_world_mm": {
+      "min": [0.0, 0.0, 0.0],
+      "max": [38.0, 40.0, 20.8]
+    }
   },
-  "fem_mesh": {
-    "file": "mesh.npz",
-    "frame": "mcx_trunk_local_mm",
-    "n_nodes": 11535
+  "volume_center_world_mm": [19.0, 20.0, 10.4],
+  "label_roles": {
+    "background_labels": [0],
+    "allowed_tumor_labels": [1],
+    "forbidden_tumor_labels": [0, 2]
   },
   "voxel_grid_gt": {
-    "shape": [150, 150, 150],
+    "shape": [190, 200, 104],
     "spacing_mm": 0.2,
-    "offset_world_mm": [4.0, 12.5, 0.4],
+    "offset_world_mm": [0.0, 0.0, 0.0],
     "frame": "mcx_trunk_local_mm"
   }
 }
 ```
 
-## 3. 哪些数据是哪个 frame（修复前 vs 修复后）
+上面的数值是 legacy Digimouse 示例，不是新代码常量。
 
-| 数据 | 修复前 | 修复后 (v3) |
-|---|---|---|
-| mesh.npz `nodes` | atlas-corner mm (0–99 range) | **trunk-local mm** (0–40 range) |
-| gt_nodes[i] | 对应 nodes[i] | 同 |
-| gt_voxels + offset | atlas-corner mm | **trunk-local mm** |
-| tumor_params.foci.center | atlas-corner mm | **trunk-local mm**（额外保留 `center_atlas_mm` 仅用于调试） |
-| MCX source position | atlas-based 换算错 | `foci.center / 0.2`（voxel）|
-| MCX `.jnii` 非零 bbox | trunk-local（本来就对） | 同 |
+## 3. 坐标换算
 
-## 4. DU2Vox 侧使用规则
+MCX/GT voxel index 与 world mm：
 
-- **删除** `MCX_VOLUME_CENTER_WORLD` 常量。
-- ViewEncoder 投影：`vox = world / 0.2`，world 直接用 mesh.nodes（修复后已 rebase）。
-- `precompute_stage2_data.py`：GT 从 `gt_voxels.npy` 查表，offset 从 `frame_manifest.voxel_grid_gt.offset_world_mm` 读，不再用 FEM 插值。
-- Stage 2 coords normalize: `(world - bbox_min) / (bbox_max - bbox_min) * 2 - 1`，bbox 从 `frame_manifest` 读（不要硬编码）。
+```python
+subject = load_subject_manifest(config, shared_dir)
 
-## 5. 硬断言（CI 级别）
+world_mm = (voxel_xyz + 0.5) * subject.voxel_size_mm
+voxel_xyz_float = world_mm / subject.voxel_size_mm
+```
 
-运行 `scripts/05_verify_frame_consistency.py`，所有 6 条必须通过：
+Atlas/原始 CT 到 trunk-local：
 
-1. `mesh.nodes.min() ≥ -1mm` & `mesh.nodes.max() ≤ [39, 41, 22]`（允许 1mm 容差）
-2. `(mesh.nodes inside MCX bbox).mean() ≥ 0.65`（头尾在外是正常的，不到 65% 说明 rebase 错了）
-3. 每个 sample: `all(foci.center ∈ MCX bbox)`（tumor 必须 100% 在 MCX 内）
-4. `|foci.center - gt_voxels 非零重心| < 0.5mm`（以 offset 还原后）
-5. MCX `.jnii` 非零 bbox 包含所有 foci.center（球半径内）
-6. `proj.npz` 非零像素占比 ∈ [10%, 60%]
+```python
+world_mm = atlas_mm - subject.atlas_to_world_offset_mm
+```
+
+投影中心：
+
+```python
+centered = world_mm - subject.volume_center_world_mm
+```
+
+## 4. 存储顺序
+
+项目内部数组通常使用 XYZ 顺序，MCX `.bin` 和 JNII 使用 ZYX 顺序。
+
+```python
+subject = load_subject_manifest(config, shared_dir)
+
+raw = np.fromfile(shared_dir / "mcx_volume_trunk.bin", dtype=np.uint8)
+volume_zyx = raw.reshape(subject.shape_zyx)
+volume_xyz = volume_zyx.transpose(2, 1, 0)
+```
+
+写 source pattern：
+
+```python
+# pattern_xyz_oriented 逻辑上覆盖 XYZ bbox，但 MCX pattern3d 按 ZYX 写入
+pattern.transpose(2, 1, 0).tofile(source_bin_path)
+json_pos = [z0, y0, x0]
+```
+
+## 5. 新 CT/分割接入
+
+新 subject 推荐配置：
+
+```yaml
+subject:
+  id: "mouse_ct_001"
+  format: "nifti"
+  segmentation_path: "/path/to/segmentation.nii.gz"
+  output_dir: "output/shared_mouse_ct_001"
+  target_voxel_size_mm: 0.2
+  crop_bbox_mm:
+    x: [0.0, 38.0]
+    y: [0.0, 40.0]
+    z: [0.0, 20.8]
+  label_mapping:
+    0: 0
+    1: 1
+    2: 2
+  label_roles:
+    background_labels: [0]
+    allowed_tumor_labels: [1]
+    forbidden_tumor_labels: [0, 2]
+```
+
+NIfTI 输入必须已预对齐；本项目当前只消费坐标契约，不自动做配准。
+
+## 6. 禁止新增的硬编码
+
+主流程、库代码和新脚本中不要新增：
+- `190, 200, 104` / `104, 200, 190`
+- `0.2` 作为体素大小
+- `[19.0, 20.0, 10.4]` 或 `[38.0, 40.0, 20.8]`
+- `0=background, 1=soft_tissue, 2=bone` 作为不可配置规则
+- Digimouse crop `[340, 740]` 作为通用规则
+
+使用：
+
+```python
+subject = load_subject_manifest(config, shared_dir)
+shape_xyz = subject.shape_xyz
+shape_zyx = subject.shape_zyx
+voxel_size = subject.voxel_size_mm
+center = subject.volume_center_world_mm
+roles = subject.label_roles
+```
+
+## 7. 验证
+
+基本 smoke：
+
+```bash
+uv run python -c "
+from fmt_simgen.pipeline.shared import load_config_with_inheritance
+from fmt_simgen.subject import load_subject_manifest
+cfg = load_config_with_inheritance('config/default.yaml')
+m = load_subject_manifest(cfg)
+print(m.subject_id, m.shape_xyz, m.shape_zyx, m.voxel_size_mm, m.volume_center_world_mm.tolist())
+"
+```
+
+mesh 或 volume 更新后，必须重新生成依赖资产：
+
+```bash
+uv run python scripts/step0c_fem_matrix.py --mesh <mesh_path> --output-dir <shared_dir>
+uv run python scripts/step0g_view_config.py --config <config> --mesh <mesh_path> --output-dir <shared_dir>
+```
